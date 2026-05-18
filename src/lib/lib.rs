@@ -12,6 +12,6 @@ pub use self::{
     error::{EfenceError, ErrorKind},
     event::EfenceEvent,
     ip::{Ipv4Cidr, Ipv4CidrPod},
-    tcp::Tcp4Event,
+    tcp::{Tcp4Event, Tcp4IngressRule, TcpIngressPolicy},
     udp::{PrefixPortPod, Udp4Event, Udp4IngressRule, UdpIngressPolicy},
 };

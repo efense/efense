@@ -4,3 +4,5 @@
    concern.
  * Set the eBPF priority of monitor function to worse priorty to make sure
    we don't track events been expcitly allowed/dropped.
+ * TCP SYNC flood protection -- tried, it seems aya compiled code cannot pass
+   kernel validation. Need deep investigation.

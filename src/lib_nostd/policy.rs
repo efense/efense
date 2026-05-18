@@ -42,6 +42,28 @@ pub const MAP_UDP_INGRESS_IFACE_TO_LPM: &str = "UDP_IN_IF2LPM";
 /// as the "any source port" bucket for a given prefix.
 pub const MAP_UDP_INGRESS_PORT_ACTION: &str = "UDP_IN_PORT_ACT";
 
+/// Map name holding the per-interface default action for TCP ingress.
+///
+/// `BPF_MAP_TYPE_HASH` keyed by interface index (`u32`), value [`u32`]
+/// (`ACTION_PASS` / `ACTION_DROP`).
+pub const MAP_TCP_INGRESS_IFACE_DEFAULT_ACTION: &str = "TCP_IN_IFACE_DFLT";
+
+/// Map name of the outer hash-of-maps mapping interface index to the
+/// per-interface source-IP LPM trie for TCP.
+///
+/// `BPF_MAP_TYPE_HASH_OF_MAPS`, keyed by interface index (`u32`). The
+/// inner map is a `BPF_MAP_TYPE_LPM_TRIE` keyed by IPv4 source address
+/// (4 bytes, network byte order) and storing an [`Ipv4Cidr`].
+pub const MAP_TCP_INGRESS_IFACE_TO_LPM: &str = "TCP_IN_IF2LPM";
+
+/// Map name of the flat hash table mapping
+/// `(matched_src_prefix, dst_port)` to an action for TCP.
+///
+/// `BPF_MAP_TYPE_HASH` keyed by [`PrefixPort`], value `u32`
+/// (`ACTION_PASS` / `ACTION_DROP`). The reserved port `PORT_ANY` (`0`)
+/// is used as the "any destination port" bucket for a given prefix.
+pub const MAP_TCP_INGRESS_PORT_ACTION: &str = "TCP_IN_PORT_ACT";
+
 /// Map name holding the serialized [`EfenceConfig`] JSON blob.
 ///
 /// `BPF_MAP_TYPE_ARRAY` of [`CFG_BLOB_LEN`] bytes. Only the first

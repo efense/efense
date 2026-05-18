@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::udp::UdpIngressPolicy;
+use crate::{tcp::TcpIngressPolicy, udp::UdpIngressPolicy};
 
 /// Top-level efense configuration applied via `efctl apply`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +46,8 @@ pub struct Interface {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub udp_ingress: Option<UdpIngressPolicy>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tcp_ingress: Option<TcpIngressPolicy>,
 }
 
 impl Interface {
@@ -57,6 +59,9 @@ impl Interface {
     pub fn merge(&mut self, old: &Self) {
         if self.udp_ingress.is_none() {
             self.udp_ingress = old.udp_ingress.clone();
+        }
+        if self.tcp_ingress.is_none() {
+            self.tcp_ingress = old.tcp_ingress.clone();
         }
     }
 }
@@ -121,17 +126,45 @@ interfaces:
     }
 
     #[test]
+    fn deserialize_tcp_example() {
+        let yaml = "\
+interfaces:
+  - name: enp2s0
+    tcp_ingress:
+      default_action: drop
+      allow_list:
+      - name: allow_ssh
+        src_ip: 192.168.122.0/24
+        dst_port: 22
+";
+        let cfg: EfenceConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.interfaces.len(), 1);
+        let iface = &cfg.interfaces[0];
+        assert_eq!(iface.name, "enp2s0");
+        let tcp = iface.tcp_ingress.as_ref().unwrap();
+        assert_eq!(tcp.default_action, Action::Drop);
+        assert_eq!(tcp.allow_list.len(), 1);
+        assert_eq!(tcp.allow_list[0].name, "allow_ssh");
+        let cidr = tcp.allow_list[0].src_ip.unwrap();
+        assert_eq!(cidr.addr, std::net::Ipv4Addr::new(192, 168, 122, 0));
+        assert_eq!(cidr.prefix_len, 24);
+        assert_eq!(tcp.allow_list[0].dst_port, Some(22));
+    }
+
+    #[test]
     fn merge_appends_interfaces_only_in_old() {
         let mut new = EfenceConfig {
             interfaces: vec![Interface {
                 name: "eth0".to_string(),
                 udp_ingress: Some(udp_policy(Action::Drop, &[])),
+                tcp_ingress: None,
             }],
         };
         let old = EfenceConfig {
             interfaces: vec![Interface {
                 name: "eth1".to_string(),
                 udp_ingress: Some(udp_policy(Action::Pass, &[("a", 1)])),
+                tcp_ingress: None,
             }],
         };
         new.merge(&old);
@@ -151,12 +184,14 @@ interfaces:
             interfaces: vec![Interface {
                 name: "eth0".to_string(),
                 udp_ingress: Some(udp_policy(Action::Drop, &[("new", 53)])),
+                tcp_ingress: None,
             }],
         };
         let old = EfenceConfig {
             interfaces: vec![Interface {
                 name: "eth0".to_string(),
                 udp_ingress: Some(udp_policy(Action::Pass, &[("old", 80)])),
+                tcp_ingress: None,
             }],
         };
         new.merge(&old);
@@ -173,12 +208,14 @@ interfaces:
             interfaces: vec![Interface {
                 name: "eth0".to_string(),
                 udp_ingress: None,
+                tcp_ingress: None,
             }],
         };
         let old = EfenceConfig {
             interfaces: vec![Interface {
                 name: "eth0".to_string(),
                 udp_ingress: Some(udp_policy(Action::Pass, &[("old", 80)])),
+                tcp_ingress: None,
             }],
         };
         new.merge(&old);

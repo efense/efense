@@ -8,13 +8,6 @@ Efense is a Linux tool for security monitor and protection.
  * eBPF based high performance, low overhead monitoring and protection
  * No daemon, no leftover thread
 
-## Goals
- * UDP drop/rate-control/redirect
- * TCP SYNC flood protection
- * Sensitive file access control
- * Process behavior(filesystem, socket) monitoring
- * AI based pattern recognition and anomaly detection
-
 ## Usage
 
 ```
@@ -45,6 +38,20 @@ interfaces:
       - name: allow_dns_query
         src_ip: 192.168.122.0/24
         src_port: 53' | cargo run -- apply -
+```
+
+### Only allow ingress SSH from 192.168.122.0/24
+
+```bash
+echo '---
+interfaces:
+  - name: enp2s0
+    tcp_ingress:
+      default_action: drop
+      allow_list:
+      - name: allow_dns_query
+        src_ip: 192.168.122.0/24
+        dst_port: 22' | cargo run -- apply -
 ```
 
 ## License

@@ -2,20 +2,36 @@
 
 //! Enforcement XDP program.
 //!
-//! The data path is:
+//! The data path for each protocol is independent:
+//!
+//! **UDP:**
 //!
 //! 1. Look up the ingress interface index in the
-//!    [`UDP_IN_IF2LPM`](IFACE_TO_LPM) hash-of-maps. If the interface has no
-//!    policy attached, pass.
+//!    [`UDP_IN_IF2LPM`](UDP_IFACE_TO_LPM) hash-of-maps. If the interface has no
+//!    UDP policy attached, pass.
 //! 2. Run a longest-prefix match against the source IPv4 address on the
 //!    per-interface LPM trie. The trie returns the canonical [`Ipv4Cidr`] of
 //!    the matching rule (or `None` ⇒ default action).
 //! 3. Look up `(matched_prefix, src_port)` in the flat
-//!    [`UDP_IN_PORT_ACT`](PORT_ACTION) hash. If miss, try the `(matched_prefix,
-//!    PORT_ANY)` "any source port" fallback.
+//!    [`UDP_IN_PORT_ACT`](UDP_PORT_ACTION) hash. If miss, try the
+//!    `(matched_prefix, PORT_ANY)` "any source port" fallback.
 //! 4. If everything missed, return the per-interface default action from
-//!    [`UDP_IN_IFACE_DFLT`](IFACE_DEFAULT_ACTION), defaulting to `XDP_PASS` if
-//!    even that map has no entry for this interface.
+//!    [`UDP_IN_IFACE_DFLT`](UDP_IFACE_DEFAULT_ACTION), defaulting to `XDP_PASS`
+//!    if even that map has no entry for this interface.
+//!
+//! **TCP:**
+//!
+//! 1. Look up the ingress interface index in the
+//!    [`TCP_IN_IF2LPM`](TCP_IFACE_TO_LPM) hash-of-maps. If the interface has no
+//!    TCP policy attached, pass.
+//! 2. Run a longest-prefix match against the source IPv4 address on the
+//!    per-interface LPM trie.
+//! 3. Look up `(matched_prefix, dst_port)` in the flat
+//!    [`TCP_IN_PORT_ACT`](TCP_PORT_ACTION) hash. If miss, try the
+//!    `(matched_prefix, PORT_ANY)` "any destination port" fallback.
+//! 4. If everything missed, return the per-interface TCP default action from
+//!    [`TCP_IN_IFACE_DFLT`](TCP_IFACE_DEFAULT_ACTION), defaulting to
+//!    `XDP_PASS`.
 
 use aya_ebpf::{
     bindings::xdp_action,
@@ -31,6 +47,7 @@ use efence_core::{
 use network_types::{
     eth::{EthHdr, EtherType},
     ip::{IpProto, Ipv4Hdr},
+    tcp::TcpHdr,
     udp::UdpHdr,
 };
 
@@ -39,19 +56,14 @@ use crate::ptr_at;
 // ---------------------------------------------------------------------------
 // Maps
 //
-// `IFACE_TO_LPM` is a BTF hash-of-maps; its inner template is a BTF
-// LPM trie. The two trailing const generics on the outer match the
-// userspace capacity (`MAX_IFACES`) and `0` flags.
-//
-// `IFACE_DEFAULT_ACTION` and `PORT_ACTION` are *legacy* hash maps
-// declared with `#[map]`. aya's BTF map set does not yet include a
-// `HashMap`, so for flat (un-nested) hash tables we fall back to the
-// legacy map definition path; aya supports both in the same ELF.
+// Per-protocol maps follow the same pattern:
+// - `*_IF2LPM` is a BTF hash-of-maps; its inner template is a BTF LPM trie.
+// - `*_PORT_ACT` and `*_IFACE_DFLT` are legacy hash maps.
 // ---------------------------------------------------------------------------
 
 /// Per-interface UDP-ingress LPM trie.
 #[btf_map(name = "UDP_IN_IF2LPM")]
-static IFACE_TO_LPM: HashOfMaps<
+static UDP_IFACE_TO_LPM: HashOfMaps<
     u32,
     LpmTrie<[u8; 4], Ipv4Cidr, { MAX_PREFIXES as usize }>,
     { MAX_IFACES as usize },
@@ -60,12 +72,31 @@ static IFACE_TO_LPM: HashOfMaps<
 
 /// `(matched_prefix, src_port)` → action lookup.
 #[map(name = "UDP_IN_PORT_ACT")]
-static PORT_ACTION: HashMap<PrefixPort, u32> =
+static UDP_PORT_ACTION: HashMap<PrefixPort, u32> =
     HashMap::<PrefixPort, u32>::with_max_entries(MAX_PREFIX_PORT_ENTRIES, 0);
 
-/// Per-interface default action.
+/// Per-interface UDP default action.
 #[map(name = "UDP_IN_IFACE_DFLT")]
-static IFACE_DEFAULT_ACTION: HashMap<u32, u32> =
+static UDP_IFACE_DEFAULT_ACTION: HashMap<u32, u32> =
+    HashMap::<u32, u32>::with_max_entries(MAX_IFACES, 0);
+
+/// Per-interface TCP-ingress LPM trie.
+#[btf_map(name = "TCP_IN_IF2LPM")]
+static TCP_IFACE_TO_LPM: HashOfMaps<
+    u32,
+    LpmTrie<[u8; 4], Ipv4Cidr, { MAX_PREFIXES as usize }>,
+    { MAX_IFACES as usize },
+    0,
+> = HashOfMaps::new();
+
+/// `(matched_prefix, dst_port)` → action lookup.
+#[map(name = "TCP_IN_PORT_ACT")]
+static TCP_PORT_ACTION: HashMap<PrefixPort, u32> =
+    HashMap::<PrefixPort, u32>::with_max_entries(MAX_PREFIX_PORT_ENTRIES, 0);
+
+/// Per-interface TCP default action.
+#[map(name = "TCP_IN_IFACE_DFLT")]
+static TCP_IFACE_DEFAULT_ACTION: HashMap<u32, u32> =
     HashMap::<u32, u32>::with_max_entries(MAX_IFACES, 0);
 
 /// Serialized JSON blob of the userspace `EfenceConfig`. Opaque to the
@@ -101,56 +132,91 @@ fn try_efence_net_ingress_apply(
     let ipv4hdr: *const Ipv4Hdr = ptr_at(ctx, EthHdr::LEN)?;
     let proto = unsafe { (*ipv4hdr).proto() }
         .map_err(|_| EfenceErrorCode::InvalidProtocol)?;
-    if proto != IpProto::Udp {
-        return Ok(xdp_action::XDP_PASS);
-    }
-
     let src_ip: [u8; 4] = unsafe { (*ipv4hdr).src_addr };
-
-    let udphdr: *const UdpHdr = ptr_at(ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
-    let src_port: u16 = unsafe { (*udphdr).src_port() };
 
     let ifindex = ctx.ingress_ifindex() as u32;
 
-    Ok(decide(ifindex, src_ip, src_port))
+    match proto {
+        IpProto::Udp => {
+            let udphdr: *const UdpHdr =
+                ptr_at(ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
+            let src_port: u16 = unsafe { (*udphdr).src_port() };
+            Ok(decide_udp(ifindex, src_ip, src_port))
+        }
+        IpProto::Tcp => {
+            let tcphdr: *const TcpHdr =
+                ptr_at(ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
+            let dst_port: u16 = unsafe { u16::from_be_bytes((*tcphdr).dest) };
+            Ok(decide_tcp(ifindex, src_ip, dst_port))
+        }
+        _ => Ok(xdp_action::XDP_PASS),
+    }
 }
 
+/// Decide the fate of a UDP packet using UDP-specific maps.
 #[inline(always)]
-fn decide(ifindex: u32, src_ip: [u8; 4], src_port: u16) -> u32 {
-    // Step 1: look up the per-interface LPM trie.
-    let inner_lpm = match unsafe { IFACE_TO_LPM.get(&ifindex) } {
+fn decide_udp(ifindex: u32, src_ip: [u8; 4], src_port: u16) -> u32 {
+    let inner_lpm = match unsafe { UDP_IFACE_TO_LPM.get(&ifindex) } {
         Some(t) => t,
-        // No policy attached to this interface: let it through.
         None => return xdp_action::XDP_PASS,
     };
 
-    // Step 2: longest-prefix match against the source IPv4 address. The
-    // LPM key carries the *maximum* prefix length (32) so it matches
-    // any inserted prefix up to /32.
     let lpm_key = LpmKey::new(32, src_ip);
     let matched_prefix: Ipv4Cidr = match inner_lpm.get(&lpm_key) {
         Some(p) => *p,
-        // No matching prefix: fall through to the per-iface default.
-        None => return iface_default_action(ifindex),
+        None => return udp_iface_default_action(ifindex),
     };
 
-    // Step 3: exact (prefix, port) match, with PORT_ANY fallback.
     let key_exact = PrefixPort::new(matched_prefix, src_port);
-    if let Some(action) = unsafe { PORT_ACTION.get(key_exact) } {
+    if let Some(action) = unsafe { UDP_PORT_ACTION.get(key_exact) } {
         return action_to_xdp(*action);
     }
     let key_any = PrefixPort::new(matched_prefix, PORT_ANY);
-    if let Some(action) = unsafe { PORT_ACTION.get(key_any) } {
+    if let Some(action) = unsafe { UDP_PORT_ACTION.get(key_any) } {
         return action_to_xdp(*action);
     }
 
-    // Step 4: per-interface default.
-    iface_default_action(ifindex)
+    udp_iface_default_action(ifindex)
+}
+
+/// Decide the fate of a TCP packet using TCP-specific maps.
+#[inline(always)]
+fn decide_tcp(ifindex: u32, src_ip: [u8; 4], dst_port: u16) -> u32 {
+    let inner_lpm = match unsafe { TCP_IFACE_TO_LPM.get(&ifindex) } {
+        Some(t) => t,
+        None => return xdp_action::XDP_PASS,
+    };
+
+    let lpm_key = LpmKey::new(32, src_ip);
+    let matched_prefix: Ipv4Cidr = match inner_lpm.get(&lpm_key) {
+        Some(p) => *p,
+        None => return tcp_iface_default_action(ifindex),
+    };
+
+    let key_exact = PrefixPort::new(matched_prefix, dst_port);
+    if let Some(action) = unsafe { TCP_PORT_ACTION.get(key_exact) } {
+        return action_to_xdp(*action);
+    }
+    let key_any = PrefixPort::new(matched_prefix, PORT_ANY);
+    if let Some(action) = unsafe { TCP_PORT_ACTION.get(key_any) } {
+        return action_to_xdp(*action);
+    }
+
+    tcp_iface_default_action(ifindex)
 }
 
 #[inline(always)]
-fn iface_default_action(ifindex: u32) -> u32 {
-    let action = match unsafe { IFACE_DEFAULT_ACTION.get(ifindex) } {
+fn udp_iface_default_action(ifindex: u32) -> u32 {
+    let action = match unsafe { UDP_IFACE_DEFAULT_ACTION.get(ifindex) } {
+        Some(a) => *a,
+        None => ACTION_PASS,
+    };
+    action_to_xdp(action)
+}
+
+#[inline(always)]
+fn tcp_iface_default_action(ifindex: u32) -> u32 {
+    let action = match unsafe { TCP_IFACE_DEFAULT_ACTION.get(ifindex) } {
         Some(a) => *a,
         None => ACTION_PASS,
     };

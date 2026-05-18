@@ -6,7 +6,9 @@ use aya::programs::links::PinnedLink;
 use efence::EfenceError;
 use log::warn;
 
-use crate::pin::{PIN_MAIN_DIR, PIN_UDP_INGRESS_DIR, link_pin_dir};
+use crate::pin::{
+    PIN_MAIN_DIR, PIN_TCP_INGRESS_DIR, PIN_UDP_INGRESS_DIR, link_pin_dir,
+};
 
 pub(crate) struct CommandPurge;
 
@@ -21,7 +23,11 @@ impl CommandPurge {
     pub(crate) async fn handle(
         _matches: &clap::ArgMatches,
     ) -> Result<(), EfenceError> {
-        let roots = [Path::new(PIN_UDP_INGRESS_DIR), Path::new(PIN_MAIN_DIR)];
+        let roots = [
+            Path::new(PIN_UDP_INGRESS_DIR),
+            Path::new(PIN_TCP_INGRESS_DIR),
+            Path::new(PIN_MAIN_DIR),
+        ];
         if roots.iter().all(|p| !p.exists()) {
             eprintln!("No efense configuration is loaded; nothing to purge.");
             return Ok(());

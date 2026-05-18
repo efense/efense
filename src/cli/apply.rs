@@ -19,18 +19,20 @@ use aya::{
 };
 use efence::{
     Action, EfenceConfig, EfenceError, Interface, Ipv4CidrPod, PrefixPortPod,
-    Udp4IngressRule, UdpIngressPolicy,
+    Tcp4IngressRule, TcpIngressPolicy, Udp4IngressRule, UdpIngressPolicy,
 };
 use efence_core::{
     ACTION_DROP, ACTION_PASS, CFG_BLOB_LEN, Ipv4Cidr, MAP_CFG, MAP_CFG_LEN,
-    MAP_UDP_INGRESS_IFACE_DEFAULT_ACTION, MAP_UDP_INGRESS_IFACE_TO_LPM,
-    MAP_UDP_INGRESS_PORT_ACTION, MAX_PREFIXES, PORT_ANY, PrefixPort,
+    MAP_TCP_INGRESS_IFACE_DEFAULT_ACTION, MAP_TCP_INGRESS_IFACE_TO_LPM,
+    MAP_TCP_INGRESS_PORT_ACTION, MAP_UDP_INGRESS_IFACE_DEFAULT_ACTION,
+    MAP_UDP_INGRESS_IFACE_TO_LPM, MAP_UDP_INGRESS_PORT_ACTION, MAX_PREFIXES,
+    PORT_ANY, PrefixPort,
 };
 use log::debug;
 
 use crate::pin::{
     ensure_pin_dirs, link_pin_path, main_map_pin_path, program_pin_path,
-    udp_ingress_map_pin_path,
+    tcp_ingress_map_pin_path, udp_ingress_map_pin_path,
 };
 
 const ARG_CONFIG: &str = "CONFIG";
@@ -121,24 +123,6 @@ fn apply(mut cfg: EfenceConfig) -> Result<(), EfenceError> {
     Ok(())
 }
 
-fn bump_memlock() {
-    let rlim = libc::rlimit {
-        rlim_cur: libc::RLIM_INFINITY,
-        rlim_max: libc::RLIM_INFINITY,
-    };
-    let ret = unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &rlim) };
-    if ret != 0 {
-        debug!("remove limit on locked memory failed, ret is: {ret}");
-    }
-}
-
-fn load_ebpf_program() -> Result<aya::Ebpf, EfenceError> {
-    Ok(aya::Ebpf::load(aya::include_bytes_aligned!(concat!(
-        env!("OUT_DIR"),
-        "/efence_ebpf_cli"
-    )))?)
-}
-
 // ---------------------------------------------------------------------------
 // Map population
 // ---------------------------------------------------------------------------
@@ -148,11 +132,17 @@ fn populate_maps(
     cfg: &EfenceConfig,
 ) -> Result<(), EfenceError> {
     // Compute the flattened rule set per interface, indexed by ifindex.
-    let by_iface = collect_per_iface(cfg)?;
+    let udp_by_iface = collect_udp_per_iface(cfg)?;
+    let tcp_by_iface = collect_tcp_per_iface(cfg)?;
 
-    populate_iface_default_action(ebpf, &by_iface)?;
-    populate_iface_to_lpm(ebpf, &by_iface)?;
-    populate_port_action(ebpf, &by_iface)?;
+    populate_udp_iface_default_action(ebpf, &udp_by_iface)?;
+    populate_udp_iface_to_lpm(ebpf, &udp_by_iface)?;
+    populate_udp_port_action(ebpf, &udp_by_iface)?;
+
+    populate_tcp_iface_default_action(ebpf, &tcp_by_iface)?;
+    populate_tcp_iface_to_lpm(ebpf, &tcp_by_iface)?;
+    populate_tcp_port_action(ebpf, &tcp_by_iface)?;
+
     write_cfg_blob(ebpf, cfg)?;
 
     Ok(())
@@ -168,7 +158,7 @@ struct IfacePolicy {
     port_rules: Vec<(Ipv4Cidr, u16, Action)>,
 }
 
-fn collect_per_iface(
+fn collect_udp_per_iface(
     cfg: &EfenceConfig,
 ) -> Result<StdHashMap<u32, IfacePolicy>, EfenceError> {
     let mut by_iface: StdHashMap<u32, IfacePolicy> = StdHashMap::new();
@@ -187,27 +177,50 @@ fn collect_per_iface(
             prefixes: HashSet::new(),
             port_rules: Vec::new(),
         });
-        // Last interface block wins on conflicting default_action (same
-        // behaviour as the previous flat collector).
         entry.default_action = *default_action;
 
         for rule in allow_list {
-            expand_rule(rule, entry)?;
+            expand_udp_rule(rule, entry)?;
         }
     }
     Ok(by_iface)
 }
 
-fn expand_rule(
+fn collect_tcp_per_iface(
+    cfg: &EfenceConfig,
+) -> Result<StdHashMap<u32, IfacePolicy>, EfenceError> {
+    let mut by_iface: StdHashMap<u32, IfacePolicy> = StdHashMap::new();
+    for iface in &cfg.interfaces {
+        let TcpIngressPolicy {
+            default_action,
+            allow_list,
+        } = match iface.tcp_ingress.as_ref() {
+            Some(p) => p,
+            None => continue,
+        };
+
+        let ifindex = lookup_ifindex(&iface.name)?;
+        let entry = by_iface.entry(ifindex).or_insert(IfacePolicy {
+            default_action: *default_action,
+            prefixes: HashSet::new(),
+            port_rules: Vec::new(),
+        });
+        entry.default_action = *default_action;
+
+        for rule in allow_list {
+            expand_tcp_rule(rule, entry)?;
+        }
+    }
+    Ok(by_iface)
+}
+
+fn expand_udp_rule(
     rule: &Udp4IngressRule,
     out: &mut IfacePolicy,
 ) -> Result<(), EfenceError> {
-    let prefix = rule_prefix(rule);
+    let prefix = udp_rule_prefix(rule);
     out.prefixes.insert(prefix);
 
-    // A rule in `allow_list` has the *opposite* action of the default,
-    // mirroring the previous behaviour where matched entries forced
-    // ACTION_PASS regardless of default.
     let action = match out.default_action {
         Action::Drop => Action::Pass,
         Action::Pass => Action::Drop,
@@ -218,7 +231,31 @@ fn expand_rule(
     Ok(())
 }
 
-fn rule_prefix(rule: &Udp4IngressRule) -> Ipv4Cidr {
+fn expand_tcp_rule(
+    rule: &Tcp4IngressRule,
+    out: &mut IfacePolicy,
+) -> Result<(), EfenceError> {
+    let prefix = tcp_rule_prefix(rule);
+    out.prefixes.insert(prefix);
+
+    let action = match out.default_action {
+        Action::Drop => Action::Pass,
+        Action::Pass => Action::Drop,
+    };
+
+    let port = rule.dst_port.unwrap_or(PORT_ANY);
+    out.port_rules.push((prefix, port, action));
+    Ok(())
+}
+
+fn udp_rule_prefix(rule: &Udp4IngressRule) -> Ipv4Cidr {
+    match rule.src_ip {
+        Some(cidr) => Ipv4Cidr::new(cidr.addr.octets(), cidr.prefix_len),
+        None => Ipv4Cidr::any(),
+    }
+}
+
+fn tcp_rule_prefix(rule: &Tcp4IngressRule) -> Ipv4Cidr {
     match rule.src_ip {
         Some(cidr) => Ipv4Cidr::new(cidr.addr.octets(), cidr.prefix_len),
         None => Ipv4Cidr::any(),
@@ -239,7 +276,7 @@ fn lookup_ifindex(name: &str) -> Result<u32, EfenceError> {
     Ok(idx)
 }
 
-fn populate_iface_default_action(
+fn populate_udp_iface_default_action(
     ebpf: &mut aya::Ebpf,
     by_iface: &StdHashMap<u32, IfacePolicy>,
 ) -> Result<(), EfenceError> {
@@ -257,7 +294,25 @@ fn populate_iface_default_action(
     Ok(())
 }
 
-fn populate_iface_to_lpm(
+fn populate_tcp_iface_default_action(
+    ebpf: &mut aya::Ebpf,
+    by_iface: &StdHashMap<u32, IfacePolicy>,
+) -> Result<(), EfenceError> {
+    let map = ebpf
+        .map_mut(MAP_TCP_INGRESS_IFACE_DEFAULT_ACTION)
+        .ok_or_else(|| {
+            EfenceError::from(format!(
+                "{MAP_TCP_INGRESS_IFACE_DEFAULT_ACTION} map not found"
+            ))
+        })?;
+    let mut hm: AyaHashMap<&mut MapData, u32, u32> = AyaHashMap::try_from(map)?;
+    for (ifindex, policy) in by_iface {
+        hm.insert(ifindex, action_value(policy.default_action), 0)?;
+    }
+    Ok(())
+}
+
+fn populate_udp_iface_to_lpm(
     ebpf: &mut aya::Ebpf,
     by_iface: &StdHashMap<u32, IfacePolicy>,
 ) -> Result<(), EfenceError> {
@@ -286,13 +341,63 @@ fn populate_iface_to_lpm(
     Ok(())
 }
 
-fn populate_port_action(
+fn populate_tcp_iface_to_lpm(
+    ebpf: &mut aya::Ebpf,
+    by_iface: &StdHashMap<u32, IfacePolicy>,
+) -> Result<(), EfenceError> {
+    let map = ebpf.map_mut(MAP_TCP_INGRESS_IFACE_TO_LPM).ok_or_else(|| {
+        EfenceError::from(format!(
+            "{MAP_TCP_INGRESS_IFACE_TO_LPM} map not found"
+        ))
+    })?;
+    let mut outer: AyaHashOfMaps<
+        &mut MapData,
+        u32,
+        AyaLpmTrie<MapData, [u8; 4], Ipv4CidrPod>,
+    > = AyaHashOfMaps::try_from(map)?;
+
+    for (ifindex, policy) in by_iface {
+        let mut inner = AyaLpmTrie::<MapData, [u8; 4], Ipv4CidrPod>::create(
+            MAX_PREFIXES,
+            BPF_F_NO_PREALLOC,
+        )?;
+        for prefix in &policy.prefixes {
+            let key = LpmKey::new(prefix.prefix_len as u32, prefix.addr);
+            inner.insert(&key, Ipv4CidrPod(*prefix), 0)?;
+        }
+        outer.insert(ifindex, &inner, 0)?;
+    }
+    Ok(())
+}
+
+fn populate_udp_port_action(
     ebpf: &mut aya::Ebpf,
     by_iface: &StdHashMap<u32, IfacePolicy>,
 ) -> Result<(), EfenceError> {
     let map = ebpf.map_mut(MAP_UDP_INGRESS_PORT_ACTION).ok_or_else(|| {
         EfenceError::from(format!(
             "{MAP_UDP_INGRESS_PORT_ACTION} map not found"
+        ))
+    })?;
+    let mut hm: AyaHashMap<&mut MapData, PrefixPortPod, u32> =
+        AyaHashMap::try_from(map)?;
+
+    for policy in by_iface.values() {
+        for (prefix, port, action) in &policy.port_rules {
+            let key = PrefixPortPod(PrefixPort::new(*prefix, *port));
+            hm.insert(key, action_value(*action), 0)?;
+        }
+    }
+    Ok(())
+}
+
+fn populate_tcp_port_action(
+    ebpf: &mut aya::Ebpf,
+    by_iface: &StdHashMap<u32, IfacePolicy>,
+) -> Result<(), EfenceError> {
+    let map = ebpf.map_mut(MAP_TCP_INGRESS_PORT_ACTION).ok_or_else(|| {
+        EfenceError::from(format!(
+            "{MAP_TCP_INGRESS_PORT_ACTION} map not found"
         ))
     })?;
     let mut hm: AyaHashMap<&mut MapData, PrefixPortPod, u32> =
@@ -344,6 +449,24 @@ fn write_cfg_blob(
     Ok(())
 }
 
+fn bump_memlock() {
+    let rlim = libc::rlimit {
+        rlim_cur: libc::RLIM_INFINITY,
+        rlim_max: libc::RLIM_INFINITY,
+    };
+    let ret = unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &rlim) };
+    if ret != 0 {
+        debug!("remove limit on locked memory failed, ret is: {ret}");
+    }
+}
+
+fn load_ebpf_program() -> Result<aya::Ebpf, EfenceError> {
+    Ok(aya::Ebpf::load(aya::include_bytes_aligned!(concat!(
+        env!("OUT_DIR"),
+        "/efence_ebpf_cli"
+    )))?)
+}
+
 fn action_value(action: Action) -> u32 {
     match action {
         Action::Pass => ACTION_PASS,
@@ -366,22 +489,26 @@ fn map_array_mut<'a, V: aya::Pod>(
 // ---------------------------------------------------------------------------
 
 fn pin_maps(ebpf: &mut aya::Ebpf) -> Result<(), EfenceError> {
-    // The maps that hold persistent state across `efctl apply` runs.
-    // Note: we intentionally do NOT pin `UDP_IN_IF2LPM` here. Inner
-    // map FDs are *owned* by the outer map once inserted; pinning the
-    // outer is fine, but the more important property is that a re-apply
-    // recreates the LPM tries from scratch from YAML config.
-    // Maps under the UDP-ingress pin root: private to this subsystem.
+    // Maps under the UDP-ingress pin root.
     let udp_ingress_maps = [
         MAP_UDP_INGRESS_IFACE_DEFAULT_ACTION,
         MAP_UDP_INGRESS_IFACE_TO_LPM,
         MAP_UDP_INGRESS_PORT_ACTION,
+    ];
+    // Maps under the TCP-ingress pin root.
+    let tcp_ingress_maps = [
+        MAP_TCP_INGRESS_IFACE_DEFAULT_ACTION,
+        MAP_TCP_INGRESS_IFACE_TO_LPM,
+        MAP_TCP_INGRESS_PORT_ACTION,
     ];
     // Maps under the shared main pin root.
     let main_maps = [MAP_CFG, MAP_CFG_LEN];
 
     for name in udp_ingress_maps {
         pin_one_map(ebpf, name, udp_ingress_map_pin_path(name))?;
+    }
+    for name in tcp_ingress_maps {
+        pin_one_map(ebpf, name, tcp_ingress_map_pin_path(name))?;
     }
     for name in main_maps {
         pin_one_map(ebpf, name, main_map_pin_path(name))?;
@@ -431,10 +558,17 @@ fn attach_and_pin_links(
         })?
         .try_into()?;
 
-    for iface in interfaces_using_udp(cfg) {
+    for iface in interfaces_with_policy(cfg) {
         attach_and_pin_link(program, iface)?;
     }
     Ok(())
+}
+
+fn interfaces_with_policy(cfg: &EfenceConfig) -> Vec<&Interface> {
+    cfg.interfaces
+        .iter()
+        .filter(|i| i.udp_ingress.is_some() || i.tcp_ingress.is_some())
+        .collect()
 }
 
 fn attach_and_pin_link(
@@ -462,11 +596,4 @@ fn attach_and_pin_link(
     let _pinned: PinnedLink = fd_link.pin(&pin_path)?;
     eprintln!("Attached and pinned XDP link for {}", iface.name);
     Ok(())
-}
-
-fn interfaces_using_udp(cfg: &EfenceConfig) -> Vec<&Interface> {
-    cfg.interfaces
-        .iter()
-        .filter(|i| i.udp_ingress.is_some())
-        .collect()
 }

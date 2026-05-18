@@ -2,7 +2,7 @@
 
 //! Filesystem layout for pinning the efense eBPF objects.
 //!
-//! There are two pin roots:
+//! There are three pin roots:
 //!
 //! * [`PIN_MAIN_DIR`] holds maps that are *shared* across all efense subsystems
 //!   (currently the serialized [`CFG`] JSON blob and its length). Keeping these
@@ -12,6 +12,10 @@
 //!
 //! * [`PIN_UDP_INGRESS_DIR`] holds everything that is specific to the
 //!   UDP-ingress XDP program: the program itself, its private maps and one
+//!   pinned link per attached interface.
+//!
+//! * [`PIN_TCP_INGRESS_DIR`] holds everything that is specific to the
+//!   TCP-ingress XDP program: the program itself, its private maps and one
 //!   pinned link per attached interface.
 //!
 //! ```text
@@ -26,6 +30,13 @@
 //!         UDP_IN_IF2LPM
 //!         UDP_IN_PORT_ACT
 //!     link/<iface>
+//! /sys/fs/bpf/efence_tcp_ingress/
+//!     program
+//!     map/
+//!         TCP_IN_IFACE_DFLT
+//!         TCP_IN_IF2LPM
+//!         TCP_IN_PORT_ACT
+//!     link/<iface>
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -38,11 +49,14 @@ pub(crate) const PIN_MAIN_DIR: &str = "/sys/fs/bpf/efence_main";
 /// Pin root for the UDP-ingress XDP subsystem.
 pub(crate) const PIN_UDP_INGRESS_DIR: &str = "/sys/fs/bpf/efence_udp_ingress";
 
+/// Pin root for the TCP-ingress XDP subsystem.
+pub(crate) const PIN_TCP_INGRESS_DIR: &str = "/sys/fs/bpf/efence_tcp_ingress";
+
 const PIN_PROG_NAME: &str = "program";
 const PIN_MAP_SUBDIR: &str = "map";
 const PIN_LINK_SUBDIR: &str = "link";
 
-/// Returns the pin path for the apply XDP program.
+/// Returns the pin path for the UDP apply XDP program.
 pub(crate) fn program_pin_path() -> PathBuf {
     Path::new(PIN_UDP_INGRESS_DIR).join(PIN_PROG_NAME)
 }
@@ -55,6 +69,16 @@ pub(crate) fn udp_ingress_map_pin_dir() -> PathBuf {
 /// Returns the pin path for a single UDP-ingress private map.
 pub(crate) fn udp_ingress_map_pin_path(name: &str) -> PathBuf {
     udp_ingress_map_pin_dir().join(name)
+}
+
+/// Returns the directory used to pin TCP-ingress private maps.
+pub(crate) fn tcp_ingress_map_pin_dir() -> PathBuf {
+    Path::new(PIN_TCP_INGRESS_DIR).join(PIN_MAP_SUBDIR)
+}
+
+/// Returns the pin path for a single TCP-ingress private map.
+pub(crate) fn tcp_ingress_map_pin_path(name: &str) -> PathBuf {
+    tcp_ingress_map_pin_dir().join(name)
 }
 
 /// Returns the directory used to pin shared (main) maps.
@@ -85,6 +109,8 @@ pub(crate) fn ensure_pin_dirs() -> Result<(), EfenceError> {
         Path::new(PIN_UDP_INGRESS_DIR).to_path_buf(),
         udp_ingress_map_pin_dir(),
         link_pin_dir(),
+        Path::new(PIN_TCP_INGRESS_DIR).to_path_buf(),
+        tcp_ingress_map_pin_dir(),
     ] {
         std::fs::create_dir_all(&dir).map_err(|e| {
             EfenceError::from(format!(
