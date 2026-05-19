@@ -23,10 +23,12 @@ use efence::{
 };
 use efence_core::{
     ACTION_DROP, ACTION_PASS, ALLOW_OUTGOING_FLAG, CFG_BLOB_LEN, Ipv4Cidr,
-    MAP_CFG, MAP_CFG_LEN, MAP_TCP_INGRESS_IFACE_DEFAULT_ACTION,
-    MAP_TCP_INGRESS_IFACE_TO_LPM, MAP_TCP_INGRESS_PORT_ACTION,
+    MAP_CFG, MAP_CFG_LEN, MAP_MONITOR_ENABLED,
+    MAP_TCP_INGRESS_IFACE_DEFAULT_ACTION, MAP_TCP_INGRESS_IFACE_TO_LPM,
+    MAP_TCP_INGRESS_PORT_ACTION, MAP_TCP4_EVENTS,
     MAP_UDP_INGRESS_IFACE_DEFAULT_ACTION, MAP_UDP_INGRESS_IFACE_TO_LPM,
-    MAP_UDP_INGRESS_PORT_ACTION, MAX_PREFIXES, PORT_ANY, PrefixPort,
+    MAP_UDP_INGRESS_PORT_ACTION, MAP_UDP4_EVENTS, MAX_PREFIXES, PORT_ANY,
+    PrefixPort,
 };
 use log::debug;
 
@@ -36,7 +38,7 @@ use crate::pin::{
 };
 
 const ARG_CONFIG: &str = "CONFIG";
-const PROG_NAME: &str = "efence_net_ingress_apply";
+pub(crate) const PROG_NAME: &str = "efence_net_ingress_apply";
 
 /// `BPF_F_NO_PREALLOC` flag value (1). The kernel forces this on for
 /// LPM tries, but we set it explicitly so the inner LPM template we
@@ -459,7 +461,7 @@ fn write_cfg_blob(
     Ok(())
 }
 
-fn bump_memlock() {
+pub(crate) fn bump_memlock() {
     let rlim = libc::rlimit {
         rlim_cur: libc::RLIM_INFINITY,
         rlim_max: libc::RLIM_INFINITY,
@@ -470,7 +472,7 @@ fn bump_memlock() {
     }
 }
 
-fn load_ebpf_program() -> Result<aya::Ebpf, EfenceError> {
+pub(crate) fn load_ebpf_program() -> Result<aya::Ebpf, EfenceError> {
     Ok(aya::Ebpf::load(aya::include_bytes_aligned!(concat!(
         env!("OUT_DIR"),
         "/efence_ebpf_cli"
@@ -512,7 +514,13 @@ fn pin_maps(ebpf: &mut aya::Ebpf) -> Result<(), EfenceError> {
         MAP_TCP_INGRESS_PORT_ACTION,
     ];
     // Maps under the shared main pin root.
-    let main_maps = [MAP_CFG, MAP_CFG_LEN];
+    let main_maps = [
+        MAP_CFG,
+        MAP_CFG_LEN,
+        MAP_UDP4_EVENTS,
+        MAP_TCP4_EVENTS,
+        MAP_MONITOR_ENABLED,
+    ];
 
     for name in udp_ingress_maps {
         pin_one_map(ebpf, name, udp_ingress_map_pin_path(name))?;
@@ -526,7 +534,7 @@ fn pin_maps(ebpf: &mut aya::Ebpf) -> Result<(), EfenceError> {
     Ok(())
 }
 
-fn pin_one_map(
+pub(crate) fn pin_one_map(
     ebpf: &mut aya::Ebpf,
     name: &str,
     path: std::path::PathBuf,

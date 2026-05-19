@@ -81,6 +81,18 @@ pub const MAP_CFG: &str = "CFG";
 /// a [`u32`].
 pub const MAP_CFG_LEN: &str = "CFG_LEN";
 
+/// Map name of the flat hash table used as a monitor-enable flag.
+///
+/// `BPF_MAP_TYPE_HASH` keyed by [`u32`] (always key `0`), value `u32`
+/// (`0` = disabled, `1` = enabled).
+pub const MAP_MONITOR_ENABLED: &str = "MONITOR_ENABLED";
+
+/// Map name of the UDP4 event ring buffer.
+pub const MAP_UDP4_EVENTS: &str = "UDP4_EVENTS";
+
+/// Map name of the TCP4 event ring buffer.
+pub const MAP_TCP4_EVENTS: &str = "TCP4_EVENTS";
+
 // ---------------------------------------------------------------------------
 // Map capacities (must match the BTF declarations in `src/ebpf/enforce.rs`)
 // ---------------------------------------------------------------------------
@@ -98,6 +110,10 @@ pub const MAX_PREFIX_PORT_ENTRIES: u32 = 16384;
 
 /// Maximum size in bytes of the serialized [`EfenceConfig`] JSON blob.
 pub const CFG_BLOB_LEN: usize = 65536;
+
+/// Ring buffer byte size for event monitoring (`UDP4_EVENTS` and
+/// `TCP4_EVENTS`). Must be a power of 2 and page-aligned (multiple of 4096).
+pub const EVENT_MONITOR_BUF_SIZE: usize = 128 * 1024;
 
 /// Reserved inner-port-map key used to mean "any source port".
 ///

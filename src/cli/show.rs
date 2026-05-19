@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use aya::maps::{Array, Map, MapData};
-use efence::{EfenceConfig, EfenceError};
+use efence::{EfenceConfig, EfenceError, ErrorKind};
 use efence_core::{CFG_BLOB_LEN, MAP_CFG, MAP_CFG_LEN};
 
 use crate::pin::{PIN_MAIN_DIR, main_map_pin_path};
@@ -40,6 +40,12 @@ impl CommandShow {
 /// Read the [`EfenceConfig`] that `efctl apply` previously serialized
 /// into the pinned `CFG` byte-array map.
 pub(crate) fn read_config() -> Result<EfenceConfig, EfenceError> {
+    let len_path = main_map_pin_path(MAP_CFG_LEN);
+    if !len_path.exists() {
+        return Ok(EfenceConfig {
+            interfaces: Vec::new(),
+        });
+    }
     let len_map: Array<MapData, u32> = open_pinned_array(MAP_CFG_LEN)?;
     let len = len_map.get(&0, 0)? as usize;
     if len == 0 {
@@ -70,11 +76,9 @@ fn open_pinned_array<V: aya::Pod>(
     name: &str,
 ) -> Result<Array<MapData, V>, EfenceError> {
     let path = main_map_pin_path(name);
-    let data = MapData::from_pin(&path).map_err(|e| {
-        EfenceError::from(format!(
-            "failed to open pinned map {}: {e}",
-            path.display()
-        ))
+    let data = MapData::from_pin(&path).map_err(|e| EfenceError {
+        kind: ErrorKind::Map,
+        msg: format!("failed to open pinned map {}: {e}", path.display()),
     })?;
     let map = Map::from_map_data(data)?;
     Ok(Array::try_from(map)?)

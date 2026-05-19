@@ -62,7 +62,3 @@ impl Tcp4EventRaw {
         })
     }
 }
-
-// Ring buffer byte size, passed as max_entries to the kernel.
-// Must be a power of 2 and page-aligned (multiple of 4096).
-pub const TCP4_EVENTS_RING_BUF_SIZE: usize = 16384;

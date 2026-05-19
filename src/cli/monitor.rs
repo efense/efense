@@ -1,16 +1,32 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::borrow::Borrow;
+use std::{
+    borrow::Borrow,
+    path::{Path, PathBuf},
+};
 
 use aya::{
-    maps::{MapData, RingBuf},
-    programs::{Xdp, XdpMode},
+    maps::{Array as AyaArray, Map, MapData, RingBuf},
+    programs::{
+        Xdp, XdpMode,
+        links::{FdLink, PinnedLink},
+    },
 };
-use efence::{EfenceError, EfenceEvent, Tcp4Event, Udp4Event};
-use efence_core::{Tcp4EventRaw, Udp4EventRaw};
-#[rustfmt::skip]
-use log::{debug, warn};
+use efence::{EfenceError, EfenceEvent, ErrorKind, Tcp4Event, Udp4Event};
+use efence_core::{
+    MAP_MONITOR_ENABLED, MAP_TCP4_EVENTS, MAP_UDP4_EVENTS, Tcp4EventRaw,
+    Udp4EventRaw,
+};
+use log::warn;
 use tokio::{io::Interest, signal};
+
+use crate::{
+    apply,
+    pin::{
+        PIN_MAIN_DIR, ensure_pin_dirs, link_pin_path, main_map_pin_path,
+        program_pin_path,
+    },
+};
 
 const ARG_IFACE: &str = "IFACE";
 
@@ -21,7 +37,10 @@ impl CommandMonitor {
 
     pub(crate) fn new_cmd() -> clap::Command {
         clap::Command::new(Self::CMD)
-            .about("Monitor network events")
+            .about(
+                "Monitor network events (stops automatically if event queue \
+                 is full)",
+            )
             .arg(
                 clap::Arg::new(ARG_IFACE)
                     .short('i')
@@ -34,82 +53,118 @@ impl CommandMonitor {
     pub(crate) async fn handle(
         matches: &clap::ArgMatches,
     ) -> Result<(), EfenceError> {
-        bump_memlock();
-        let mut ebpf = load_ebpf_program()?;
-        init_ebpf_logger(&mut ebpf);
+        let iface = matches
+            .get_one::<String>(ARG_IFACE)
+            .expect("clap required IFACE");
+
+        if !Path::new(PIN_MAIN_DIR).exists() {
+            setup_bpf_state(iface)?;
+        }
+
+        let udp_ring_buf =
+            open_pinned_ring_buf(main_map_pin_path(MAP_UDP4_EVENTS))?;
+        let tcp_ring_buf =
+            open_pinned_ring_buf(main_map_pin_path(MAP_TCP4_EVENTS))?;
+
+        set_monitor_enabled(true)?;
 
         let (ev_tx, ev_rx) = tokio::sync::mpsc::unbounded_channel();
 
-        spawn_udp4_task(
-            take_ring_buf(&mut ebpf, "UDP4_EVENTS")?,
-            ev_tx.clone(),
-        );
-        spawn_tcp4_task(take_ring_buf(&mut ebpf, "TCP4_EVENTS")?, ev_tx);
+        spawn_udp4_task(udp_ring_buf, ev_tx.clone());
+        spawn_tcp4_task(tcp_ring_buf, ev_tx);
         spawn_event_printer(ev_rx);
-
-        let iface = matches
-            .get_one::<String>(ARG_IFACE)
-            .expect("clap required iface");
-        attach_xdp_program(&mut ebpf, iface)?;
 
         let ctrl_c = signal::ctrl_c();
         eprintln!("Waiting for Ctrl-C...");
         ctrl_c.await?;
         eprintln!("Exiting...");
 
+        set_monitor_enabled(false)?;
+
         Ok(())
     }
 }
 
-fn bump_memlock() {
-    let rlim = libc::rlimit {
-        rlim_cur: libc::RLIM_INFINITY,
-        rlim_max: libc::RLIM_INFINITY,
-    };
-    let ret = unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &rlim) };
-    if ret != 0 {
-        debug!("remove limit on locked memory failed, ret is: {ret}");
+// ---------------------------------------------------------------------------
+// Standalone setup (when `efctl apply` has not been run)
+// ---------------------------------------------------------------------------
+
+fn setup_bpf_state(iface: &str) -> Result<(), EfenceError> {
+    apply::bump_memlock();
+    ensure_pin_dirs()?;
+    let mut ebpf = apply::load_ebpf_program()?;
+
+    // Pin the monitor maps so the pinned-ring-buf path below can open them.
+    let main_maps = [MAP_UDP4_EVENTS, MAP_TCP4_EVENTS, MAP_MONITOR_ENABLED];
+    for name in main_maps {
+        apply::pin_one_map(&mut ebpf, name, main_map_pin_path(name))?;
     }
-}
 
-fn load_ebpf_program() -> Result<aya::Ebpf, EfenceError> {
-    Ok(aya::Ebpf::load(aya::include_bytes_aligned!(concat!(
-        env!("OUT_DIR"),
-        "/efence_ebpf_cli"
-    )))?)
-}
+    // Load and pin the XDP program.
+    let program: &mut Xdp = ebpf
+        .program_mut(apply::PROG_NAME)
+        .ok_or_else(|| {
+            EfenceError::from(format!("{} program not found", apply::PROG_NAME))
+        })?
+        .try_into()?;
+    program.load()?;
 
-fn init_ebpf_logger(ebpf: &mut aya::Ebpf) {
-    match aya_log::EbpfLogger::init(ebpf) {
-        Err(e) => {
-            warn!("failed to initialize eBPF logger: {e}");
-        }
-        Ok(logger) => {
-            let mut logger = tokio::io::unix::AsyncFd::with_interest(
-                logger,
-                tokio::io::Interest::READABLE,
-            )
-            .expect("Failed to create AsyncFd for logger");
-            tokio::task::spawn(async move {
-                loop {
-                    let mut guard = logger.readable_mut().await.unwrap();
-                    guard.get_inner_mut().flush();
-                    guard.clear_ready();
-                }
-            });
+    let pin_path = program_pin_path();
+    let _ = std::fs::remove_file(&pin_path);
+    program.pin(&pin_path)?;
+
+    // Attach to the interface and pin the link so it survives this process.
+    let pin_path = link_pin_path(iface);
+    if pin_path.exists() {
+        match PinnedLink::from_pin(&pin_path) {
+            Ok(pinned) => {
+                let _ = pinned.unpin();
+            }
+            Err(_) => {
+                let _ = std::fs::remove_file(&pin_path);
+            }
         }
     }
+    let link_id = program.attach(iface, XdpMode::default())?;
+    let link = program.take_link(link_id)?;
+    let fd_link: FdLink = link.try_into()?;
+    let _pinned: PinnedLink = fd_link.pin(&pin_path)?;
+    eprintln!("Attached and pinned XDP link for {iface}");
+
+    Ok(())
 }
 
-fn take_ring_buf(
-    ebpf: &mut aya::Ebpf,
-    name: &str,
-) -> Result<RingBuf<impl Borrow<MapData> + Send + 'static>, EfenceError> {
-    let map = ebpf
-        .take_map(name)
-        .ok_or_else(|| EfenceError::from(format!("{name} map not found")))?;
+// ---------------------------------------------------------------------------
+// Pinned-map helpers
+// ---------------------------------------------------------------------------
+
+fn open_pinned_ring_buf(
+    path: PathBuf,
+) -> Result<RingBuf<MapData>, EfenceError> {
+    let map_data = MapData::from_pin(&path).map_err(|e| EfenceError {
+        kind: ErrorKind::Map,
+        msg: format!("failed to open {path:?}: {e}"),
+    })?;
+    let map = Map::from_map_data(map_data)?;
     Ok(RingBuf::try_from(map)?)
 }
+
+fn set_monitor_enabled(enabled: bool) -> Result<(), EfenceError> {
+    let path = main_map_pin_path(MAP_MONITOR_ENABLED);
+    let map_data = MapData::from_pin(&path).map_err(|e| EfenceError {
+        kind: ErrorKind::Map,
+        msg: format!("failed to open MONITOR_ENABLED map at {path:?}: {e}"),
+    })?;
+    let map = Map::from_map_data(map_data)?;
+    let mut arr: AyaArray<MapData, u32> = AyaArray::try_from(map)?;
+    let value: u32 = if enabled { 1 } else { 0 };
+    arr.set(0, value, 0)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Event polling
+// ---------------------------------------------------------------------------
 
 fn spawn_udp4_task(
     ring_buf: RingBuf<impl Borrow<MapData> + Send + 'static>,
@@ -171,19 +226,4 @@ fn spawn_event_printer(
             }
         }
     });
-}
-
-fn attach_xdp_program(
-    ebpf: &mut aya::Ebpf,
-    iface: &str,
-) -> Result<(), EfenceError> {
-    let program: &mut Xdp = ebpf
-        .program_mut("efence_net_ingress_monitor")
-        .ok_or_else(|| {
-            EfenceError::from("efence_net_ingress_monitor program not found")
-        })?
-        .try_into()?;
-    program.load()?;
-    program.attach(iface, XdpMode::default())?;
-    Ok(())
 }

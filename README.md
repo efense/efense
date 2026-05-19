@@ -48,6 +48,8 @@ interfaces:
   - name: enp2s0
     tcp_ingress:
       default_action: drop
+      # allow TCP connection initialized by current host
+      allow_outgoing: true
       allow_list:
       - name: allow_dns_query
         src_ip: 192.168.122.0/24

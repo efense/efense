@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Enforcement XDP program.
+//! Enforcement XDP program — also handles event monitoring when the
+//! [`MONITOR_ENABLED`] flag is set.
 //!
 //! The data path for each protocol is independent:
 //!
@@ -141,13 +142,23 @@ fn try_efence_net_ingress_apply(
             let udphdr: *const UdpHdr =
                 ptr_at(ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
             let src_port: u16 = unsafe { (*udphdr).src_port() };
-            Ok(decide_udp(ifindex, src_ip, src_port))
+            let dst_port: u16 = unsafe { (*udphdr).dst_port() };
+            let action = decide_udp(ifindex, src_ip, src_port);
+            crate::monitor::try_monitor_udp(
+                ctx, ipv4hdr, src_ip, src_port, dst_port,
+            );
+            Ok(action)
         }
         IpProto::Tcp => {
             let tcphdr: *const TcpHdr =
                 ptr_at(ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
+            let src_port: u16 = unsafe { u16::from_be_bytes((*tcphdr).source) };
             let dst_port: u16 = unsafe { u16::from_be_bytes((*tcphdr).dest) };
-            Ok(decide_tcp(ifindex, src_ip, dst_port, tcphdr))
+            let action = decide_tcp(ifindex, src_ip, dst_port, tcphdr);
+            crate::monitor::try_monitor_tcp(
+                ctx, ipv4hdr, src_ip, src_port, dst_port, tcphdr,
+            );
+            Ok(action)
         }
         _ => Ok(xdp_action::XDP_PASS),
     }
