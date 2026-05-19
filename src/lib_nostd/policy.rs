@@ -13,6 +13,12 @@ pub const ACTION_PASS: u32 = 0;
 /// Action value indicating the packet should be dropped.
 pub const ACTION_DROP: u32 = 1;
 
+/// Bit-flag (ORed into the per-interface default-action value) that
+/// enables the "allow outgoing" behaviour for TCP: non-SYN packets are
+/// passed so that connections initiated by the local host are allowed
+/// through; only incoming pure-SYNs are subject to the allow list.
+pub const ALLOW_OUTGOING_FLAG: u32 = 2;
+
 // ---------------------------------------------------------------------------
 // Map names
 // ---------------------------------------------------------------------------

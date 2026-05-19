@@ -22,11 +22,11 @@ use efence::{
     Tcp4IngressRule, TcpIngressPolicy, Udp4IngressRule, UdpIngressPolicy,
 };
 use efence_core::{
-    ACTION_DROP, ACTION_PASS, CFG_BLOB_LEN, Ipv4Cidr, MAP_CFG, MAP_CFG_LEN,
-    MAP_TCP_INGRESS_IFACE_DEFAULT_ACTION, MAP_TCP_INGRESS_IFACE_TO_LPM,
-    MAP_TCP_INGRESS_PORT_ACTION, MAP_UDP_INGRESS_IFACE_DEFAULT_ACTION,
-    MAP_UDP_INGRESS_IFACE_TO_LPM, MAP_UDP_INGRESS_PORT_ACTION, MAX_PREFIXES,
-    PORT_ANY, PrefixPort,
+    ACTION_DROP, ACTION_PASS, ALLOW_OUTGOING_FLAG, CFG_BLOB_LEN, Ipv4Cidr,
+    MAP_CFG, MAP_CFG_LEN, MAP_TCP_INGRESS_IFACE_DEFAULT_ACTION,
+    MAP_TCP_INGRESS_IFACE_TO_LPM, MAP_TCP_INGRESS_PORT_ACTION,
+    MAP_UDP_INGRESS_IFACE_DEFAULT_ACTION, MAP_UDP_INGRESS_IFACE_TO_LPM,
+    MAP_UDP_INGRESS_PORT_ACTION, MAX_PREFIXES, PORT_ANY, PrefixPort,
 };
 use log::debug;
 
@@ -152,6 +152,8 @@ fn populate_maps(
 /// expanded into `(canonical prefix, port-or-ANY, action)` triples.
 struct IfacePolicy {
     default_action: Action,
+    /// When `true`, non-SYN TCP packets are passed unconditionally.
+    allow_outgoing: bool,
     /// All canonical prefixes appearing on this interface, deduplicated.
     prefixes: HashSet<Ipv4Cidr>,
     /// Triples (canonical prefix, port or `PORT_ANY`, action).
@@ -174,6 +176,7 @@ fn collect_udp_per_iface(
         let ifindex = lookup_ifindex(&iface.name)?;
         let entry = by_iface.entry(ifindex).or_insert(IfacePolicy {
             default_action: *default_action,
+            allow_outgoing: false,
             prefixes: HashSet::new(),
             port_rules: Vec::new(),
         });
@@ -194,6 +197,7 @@ fn collect_tcp_per_iface(
         let TcpIngressPolicy {
             default_action,
             allow_list,
+            allow_outgoing,
         } = match iface.tcp_ingress.as_ref() {
             Some(p) => p,
             None => continue,
@@ -202,10 +206,12 @@ fn collect_tcp_per_iface(
         let ifindex = lookup_ifindex(&iface.name)?;
         let entry = by_iface.entry(ifindex).or_insert(IfacePolicy {
             default_action: *default_action,
+            allow_outgoing: *allow_outgoing,
             prefixes: HashSet::new(),
             port_rules: Vec::new(),
         });
         entry.default_action = *default_action;
+        entry.allow_outgoing = *allow_outgoing;
 
         for rule in allow_list {
             expand_tcp_rule(rule, entry)?;
@@ -307,7 +313,11 @@ fn populate_tcp_iface_default_action(
         })?;
     let mut hm: AyaHashMap<&mut MapData, u32, u32> = AyaHashMap::try_from(map)?;
     for (ifindex, policy) in by_iface {
-        hm.insert(ifindex, action_value(policy.default_action), 0)?;
+        let mut v = action_value(policy.default_action);
+        if policy.allow_outgoing {
+            v |= ALLOW_OUTGOING_FLAG;
+        }
+        hm.insert(ifindex, v, 0)?;
     }
     Ok(())
 }

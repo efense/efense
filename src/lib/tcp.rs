@@ -55,6 +55,16 @@ pub struct TcpIngressPolicy {
     pub default_action: Action,
     #[serde(default)]
     pub allow_list: Vec<Tcp4IngressRule>,
+    /// When `true`, TCP packets that are not pure SYNs (i.e. not
+    /// opening a new connection) are unconditionally passed. This lets
+    /// the local host initiate outbound TCP connections even when the
+    /// default action is `drop`.
+    #[serde(default = "default_true")]
+    pub allow_outgoing: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// A single rule entry inside a TCP ingress `allow_list`.

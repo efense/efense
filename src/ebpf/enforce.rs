@@ -41,7 +41,7 @@ use aya_ebpf::{
     programs::XdpContext,
 };
 use efence_core::{
-    ACTION_DROP, ACTION_PASS, CFG_BLOB_LEN, EfenceErrorCode, Ipv4Cidr,
+    ACTION_PASS, ALLOW_OUTGOING_FLAG, CFG_BLOB_LEN, EfenceErrorCode, Ipv4Cidr,
     MAX_IFACES, MAX_PREFIX_PORT_ENTRIES, MAX_PREFIXES, PORT_ANY, PrefixPort,
 };
 use network_types::{
@@ -147,7 +147,7 @@ fn try_efence_net_ingress_apply(
             let tcphdr: *const TcpHdr =
                 ptr_at(ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
             let dst_port: u16 = unsafe { u16::from_be_bytes((*tcphdr).dest) };
-            Ok(decide_tcp(ifindex, src_ip, dst_port))
+            Ok(decide_tcp(ifindex, src_ip, dst_port, tcphdr))
         }
         _ => Ok(xdp_action::XDP_PASS),
     }
@@ -181,11 +181,35 @@ fn decide_udp(ifindex: u32, src_ip: [u8; 4], src_port: u16) -> u32 {
 
 /// Decide the fate of a TCP packet using TCP-specific maps.
 #[inline(always)]
-fn decide_tcp(ifindex: u32, src_ip: [u8; 4], dst_port: u16) -> u32 {
+fn decide_tcp(
+    ifindex: u32,
+    src_ip: [u8; 4],
+    dst_port: u16,
+    tcphdr: *const TcpHdr,
+) -> u32 {
     let inner_lpm = match unsafe { TCP_IFACE_TO_LPM.get(&ifindex) } {
         Some(t) => t,
         None => return xdp_action::XDP_PASS,
     };
+
+    // Check whether allow_outgoing is set for this interface.
+    let iface_raw = unsafe { TCP_IFACE_DEFAULT_ACTION.get(&ifindex) }
+        .map(|v| *v)
+        .unwrap_or(ACTION_PASS);
+
+    if (iface_raw & ALLOW_OUTGOING_FLAG) != 0 {
+        let syn = unsafe { (*tcphdr).syn() };
+        // Pass everything except pure SYNs (syn=1, ack=0), which are
+        // new incoming connection requests and still get filtered.
+        if syn == 0 {
+            return xdp_action::XDP_PASS;
+        }
+        let ack = unsafe { (*tcphdr).ack() };
+        if ack != 0 {
+            // SYN-ACK – response to an outbound SYN from this host.
+            return xdp_action::XDP_PASS;
+        }
+    }
 
     let lpm_key = LpmKey::new(32, src_ip);
     let matched_prefix: Ipv4Cidr = match inner_lpm.get(&lpm_key) {
@@ -225,9 +249,9 @@ fn tcp_iface_default_action(ifindex: u32) -> u32 {
 
 #[inline(always)]
 fn action_to_xdp(action: u32) -> u32 {
-    match action {
-        ACTION_DROP => xdp_action::XDP_DROP,
-        ACTION_PASS => xdp_action::XDP_PASS,
+    match action & 1 {
+        0 => xdp_action::XDP_PASS, // ACTION_PASS
+        1 => xdp_action::XDP_DROP, // ACTION_DROP
         _ => xdp_action::XDP_PASS,
     }
 }
