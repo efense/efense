@@ -7,9 +7,7 @@ use aya_ebpf::{
     btf_maps::{Array, ring_buf::RingBuf},
     helpers::bpf_ktime_get_boot_ns,
     macros::btf_map,
-    programs::XdpContext,
 };
-use aya_log_ebpf::warn;
 use efence_core::{EVENT_MONITOR_BUF_SIZE, Tcp4EventRaw, Udp4EventRaw};
 use network_types::{ip::Ipv4Hdr, tcp::TcpHdr};
 
@@ -41,32 +39,26 @@ fn is_monitor_enabled() -> bool {
     MONITOR_ENABLED.get(0).map_or(false, |v| *v != 0)
 }
 
-/// Returns `true` on success, `false` if the ring buffer was full.
-fn submit_udp4_event(ctx: &XdpContext, event: Udp4EventRaw) -> bool {
+fn submit_udp4_event(event: Udp4EventRaw) {
     match UDP4_EVENTS.reserve(0) {
         Some(mut entry) => {
             entry.write(event);
             entry.submit(0);
-            true
         }
         None => {
-            warn!(ctx, "UDP4_EVENTS ring buffer is full, disabling monitor",);
-            false
+            disable_monitor();
         }
     }
 }
 
-/// Returns `true` on success, `false` if the ring buffer was full.
-fn submit_tcp4_event(ctx: &XdpContext, event: Tcp4EventRaw) -> bool {
+fn submit_tcp4_event(event: Tcp4EventRaw) {
     match TCP4_EVENTS.reserve(0) {
         Some(mut entry) => {
             entry.write(event);
             entry.submit(0);
-            true
         }
         None => {
-            warn!(ctx, "TCP4_EVENTS ring buffer is full, disabling monitor",);
-            false
+            disable_monitor();
         }
     }
 }
@@ -76,7 +68,6 @@ fn submit_tcp4_event(ctx: &XdpContext, event: Tcp4EventRaw) -> bool {
 // ---------------------------------------------------------------------------
 
 pub fn try_monitor_udp(
-    ctx: &XdpContext,
     ipv4hdr: *const Ipv4Hdr,
     src_ip: [u8; 4],
     src_port: u16,
@@ -88,17 +79,10 @@ pub fn try_monitor_udp(
     let src = u32::from_be_bytes(src_ip);
     let dst = u32::from_be_bytes(unsafe { (*ipv4hdr).dst_addr });
     let tstamp = unsafe { bpf_ktime_get_boot_ns() };
-    if !submit_udp4_event(
-        ctx,
-        Udp4EventRaw::new(src, dst, src_port, dst_port, tstamp),
-    ) {
-        disable_monitor();
-        return;
-    }
+    submit_udp4_event(Udp4EventRaw::new(src, dst, src_port, dst_port, tstamp));
 }
 
 pub fn try_monitor_tcp(
-    ctx: &XdpContext,
     ipv4hdr: *const Ipv4Hdr,
     src_ip: [u8; 4],
     src_port: u16,
@@ -118,13 +102,9 @@ pub fn try_monitor_tcp(
             let src = u32::from_be_bytes(src_ip);
             let dst = u32::from_be_bytes(unsafe { (*ipv4hdr).dst_addr });
             let tstamp = unsafe { bpf_ktime_get_boot_ns() };
-            if !submit_tcp4_event(
-                ctx,
-                Tcp4EventRaw::new(src, dst, src_port, dst_port, tstamp),
-            ) {
-                disable_monitor();
-                return;
-            }
+            submit_tcp4_event(Tcp4EventRaw::new(
+                src, dst, src_port, dst_port, tstamp,
+            ));
         }
     }
 }

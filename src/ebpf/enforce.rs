@@ -54,8 +54,6 @@ use network_types::{
 
 use crate::ptr_at;
 
-const TCP_HDR_ACK_BIT: u8 = 0x10; // ACK flag in the TCP header's flags field
-
 // ---------------------------------------------------------------------------
 // Maps
 //
@@ -193,7 +191,7 @@ fn try_efence_net_xdp_ingress_apply(
             }
             let action = decide_udp(ifindex, src_ip, src_port);
             crate::monitor::try_monitor_udp(
-                ctx, ipv4hdr, src_ip, src_port, dst_port,
+                ipv4hdr, src_ip, src_port, dst_port,
             );
             Ok(action)
         }
@@ -224,14 +222,14 @@ fn try_efence_net_xdp_ingress_apply(
 
             // Run TCP ACK flood protection before the regular filter.
             if let Some(action) =
-                protect_tcp_ack_flood(ctx, ifindex, src_ip, ipv4hdr, tcphdr)?
+                protect_tcp_ack_flood(ctx, ifindex, src_ip, tcphdr)?
             {
                 return Ok(action);
             }
 
             let action = decide_tcp(ifindex, src_ip, dst_port, tcphdr);
             crate::monitor::try_monitor_tcp(
-                ctx, ipv4hdr, src_ip, src_port, dst_port, tcphdr,
+                ipv4hdr, src_ip, src_port, dst_port, tcphdr,
             );
             Ok(action)
         }
@@ -352,7 +350,6 @@ fn protect_tcp_ack_flood(
     ctx: &XdpContext,
     ifindex: u32,
     src_ip: [u8; 4],
-    ipv4hdr: *const Ipv4Hdr,
     tcphdr: *const TcpHdr,
 ) -> Result<Option<u32>, EfenceErrorCode> {
     // Check if ACK flood protection is enabled on this interface.

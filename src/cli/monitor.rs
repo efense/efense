@@ -12,6 +12,7 @@ use aya::{
         links::{FdLink, PinnedLink},
     },
 };
+use aya_log::EbpfLogger;
 use efence::{EfenceError, EfenceEvent, ErrorKind, Tcp4Event, Udp4Event};
 use efence_core::{
     MAP_MONITOR_ENABLED, MAP_TCP4_EVENTS, MAP_UDP4_EVENTS, Tcp4EventRaw,
@@ -94,6 +95,25 @@ fn setup_bpf_state(iface: &str) -> Result<(), EfenceError> {
     ensure_pin_dirs()?;
     let mut ebpf = apply::load_ebpf_program()?;
 
+    match EbpfLogger::init(&mut ebpf) {
+        Err(e) => {
+            warn!("failed to initialize eBPF logger: {e}");
+        }
+        Ok(logger) => {
+            let mut logger = tokio::io::unix::AsyncFd::with_interest(
+                logger,
+                tokio::io::Interest::READABLE,
+            )?;
+            tokio::task::spawn(async move {
+                loop {
+                    let mut guard = logger.readable_mut().await.unwrap();
+                    guard.get_inner_mut().flush();
+                    guard.clear_ready();
+                }
+            });
+        }
+    }
+
     // Pin the monitor maps so the pinned-ring-buf path below can open them.
     let main_maps = [MAP_UDP4_EVENTS, MAP_TCP4_EVENTS, MAP_MONITOR_ENABLED];
     for name in main_maps {
@@ -151,6 +171,9 @@ fn open_pinned_ring_buf(
 
 fn set_monitor_enabled(enabled: bool) -> Result<(), EfenceError> {
     let path = main_map_pin_path(MAP_MONITOR_ENABLED);
+    if !enabled && !path.exists() {
+        return Ok(());
+    }
     let map_data = MapData::from_pin(&path).map_err(|e| EfenceError {
         kind: ErrorKind::Map,
         msg: format!("failed to open MONITOR_ENABLED map at {path:?}: {e}"),
