@@ -8,6 +8,7 @@ use efence_core::EfenceErrorCode;
 
 mod enforce;
 mod monitor;
+mod protect;
 
 #[inline(always)]
 pub(crate) fn ptr_at<T>(
