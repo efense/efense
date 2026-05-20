@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use aya::Pod;
 use serde::{Deserialize, Serialize};
 
 use crate::{tcp::TcpIngressPolicy, udp::UdpIngressPolicy};
@@ -44,10 +45,26 @@ impl EfenceConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Interface {
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub udp_ingress: Option<UdpIngressPolicy>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub tcp_ingress: Option<TcpIngressPolicy>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        alias = "udp_ingress"
+    )]
+    pub udp: Option<UdpIngressPolicy>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        alias = "tcp_ingress"
+    )]
+    pub tcp: Option<TcpIngressPolicy>,
+}
+
+/// Per-interface protection features (e.g. flood detection).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Protections {
+    /// Enable TCP ACK flood protection on this interface.
+    #[serde(default)]
+    pub tcp_ack_flood: bool,
 }
 
 impl Interface {
@@ -57,11 +74,11 @@ impl Interface {
     /// otherwise the entry from `old` is preserved. The interface name
     /// is not modified.
     pub fn merge(&mut self, old: &Self) {
-        if self.udp_ingress.is_none() {
-            self.udp_ingress = old.udp_ingress.clone();
+        if self.udp.is_none() {
+            self.udp = old.udp.clone();
         }
-        if self.tcp_ingress.is_none() {
-            self.tcp_ingress = old.tcp_ingress.clone();
+        if self.tcp.is_none() {
+            self.tcp = old.tcp.clone();
         }
     }
 }
@@ -74,6 +91,30 @@ pub enum Action {
     Drop,
 }
 
+/// Userspace POD wrapper over [`efence_core::PortKey`].
+///
+/// See [`Ipv4CidrPod`] for the rationale.
+#[repr(transparent)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PortKeyPod(pub efence_core::PortKey);
+
+impl From<efence_core::PortKey> for PortKeyPod {
+    fn from(v: efence_core::PortKey) -> Self {
+        Self(v)
+    }
+}
+
+impl From<PortKeyPod> for efence_core::PortKey {
+    fn from(v: PortKeyPod) -> Self {
+        v.0
+    }
+}
+
+// SAFETY: `efence_core::PortKey` is `#[repr(C)]` with only `Copy` integer
+// fields plus explicit `_pad` bytes, and is `'static`. The wrapper adds
+// nothing thanks to `repr(transparent)`.
+unsafe impl Pod for PortKeyPod {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,41 +125,37 @@ mod tests {
         let yaml = "\
 interfaces:
   - name: enp2s0
-    udp_ingress:
-      default_action: drop
+    udp:
       allow_list:
       - name: allow_dns_query
         src_port: 53
       - name: drop_subnet_80
-        src_ip: 10.0.0.0/24
+        src_ip_ranges:
+        - 10.0.0.0/24
         src_port: 80
 ";
         let cfg: EfenceConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(cfg.interfaces.len(), 1);
         let iface = &cfg.interfaces[0];
         assert_eq!(iface.name, "enp2s0");
-        let udp = iface.udp_ingress.as_ref().unwrap();
-        assert_eq!(udp.default_action, Action::Drop);
+        let udp = iface.udp.as_ref().unwrap();
         assert_eq!(udp.allow_list.len(), 2);
         assert_eq!(udp.allow_list[0].name, "allow_dns_query");
-        assert_eq!(udp.allow_list[0].src_ip, None);
+        assert!(udp.allow_list[0].src_ip_ranges.is_empty());
         assert_eq!(udp.allow_list[0].src_port, Some(53));
         let r1 = &udp.allow_list[1];
         assert_eq!(r1.name, "drop_subnet_80");
-        let cidr = r1.src_ip.unwrap();
-        assert_eq!(cidr.addr, std::net::Ipv4Addr::new(10, 0, 0, 0));
-        assert_eq!(cidr.prefix_len, 24);
+        assert_eq!(r1.src_ip_ranges, vec!["10.0.0.0/24"]);
         assert_eq!(r1.src_port, Some(80));
     }
 
-    fn udp_policy(default: Action, rules: &[(&str, u16)]) -> UdpIngressPolicy {
+    fn udp_policy(rules: &[(&str, u16)]) -> UdpIngressPolicy {
         UdpIngressPolicy {
-            default_action: default,
             allow_list: rules
                 .iter()
                 .map(|(n, p)| Udp4IngressRule {
                     name: (*n).to_string(),
-                    src_ip: None,
+                    src_ip_ranges: Vec::new(),
                     src_port: Some(*p),
                 })
                 .collect(),
@@ -130,25 +167,25 @@ interfaces:
         let yaml = "\
 interfaces:
   - name: enp2s0
-    tcp_ingress:
-      default_action: drop
+    tcp:
       allow_list:
       - name: allow_ssh
-        src_ip: 192.168.122.0/24
-        dst_port: 22
+        src_ip_ranges:
+        - 192.168.122.0/24
+        port: 22
 ";
         let cfg: EfenceConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(cfg.interfaces.len(), 1);
         let iface = &cfg.interfaces[0];
         assert_eq!(iface.name, "enp2s0");
-        let tcp = iface.tcp_ingress.as_ref().unwrap();
-        assert_eq!(tcp.default_action, Action::Drop);
+        let tcp = iface.tcp.as_ref().unwrap();
         assert_eq!(tcp.allow_list.len(), 1);
         assert_eq!(tcp.allow_list[0].name, "allow_ssh");
-        let cidr = tcp.allow_list[0].src_ip.unwrap();
-        assert_eq!(cidr.addr, std::net::Ipv4Addr::new(192, 168, 122, 0));
-        assert_eq!(cidr.prefix_len, 24);
-        assert_eq!(tcp.allow_list[0].dst_port, Some(22));
+        assert_eq!(
+            tcp.allow_list[0].src_ip_ranges,
+            vec!["192.168.122.0/24".to_string()]
+        );
+        assert_eq!(tcp.allow_list[0].port, 22);
     }
 
     #[test]
@@ -156,15 +193,15 @@ interfaces:
         let mut new = EfenceConfig {
             interfaces: vec![Interface {
                 name: "eth0".to_string(),
-                udp_ingress: Some(udp_policy(Action::Drop, &[])),
-                tcp_ingress: None,
+                udp: Some(udp_policy(&[])),
+                tcp: None,
             }],
         };
         let old = EfenceConfig {
             interfaces: vec![Interface {
                 name: "eth1".to_string(),
-                udp_ingress: Some(udp_policy(Action::Pass, &[("a", 1)])),
-                tcp_ingress: None,
+                udp: Some(udp_policy(&[("a", 1)])),
+                tcp: None,
             }],
         };
         new.merge(&old);
@@ -172,8 +209,7 @@ interfaces:
         assert_eq!(new.interfaces[0].name, "eth0");
         assert_eq!(new.interfaces[1].name, "eth1");
         assert_eq!(
-            new.interfaces[1].udp_ingress.as_ref().unwrap().allow_list[0]
-                .src_port,
+            new.interfaces[1].udp.as_ref().unwrap().allow_list[0].src_port,
             Some(1)
         );
     }
@@ -183,21 +219,20 @@ interfaces:
         let mut new = EfenceConfig {
             interfaces: vec![Interface {
                 name: "eth0".to_string(),
-                udp_ingress: Some(udp_policy(Action::Drop, &[("new", 53)])),
-                tcp_ingress: None,
+                udp: Some(udp_policy(&[("new", 53)])),
+                tcp: None,
             }],
         };
         let old = EfenceConfig {
             interfaces: vec![Interface {
                 name: "eth0".to_string(),
-                udp_ingress: Some(udp_policy(Action::Pass, &[("old", 80)])),
-                tcp_ingress: None,
+                udp: Some(udp_policy(&[("old", 80)])),
+                tcp: None,
             }],
         };
         new.merge(&old);
         assert_eq!(new.interfaces.len(), 1);
-        let udp = new.interfaces[0].udp_ingress.as_ref().unwrap();
-        assert_eq!(udp.default_action, Action::Drop);
+        let udp = new.interfaces[0].udp.as_ref().unwrap();
         assert_eq!(udp.allow_list.len(), 1);
         assert_eq!(udp.allow_list[0].name, "new");
     }
@@ -207,20 +242,19 @@ interfaces:
         let mut new = EfenceConfig {
             interfaces: vec![Interface {
                 name: "eth0".to_string(),
-                udp_ingress: None,
-                tcp_ingress: None,
+                udp: None,
+                tcp: None,
             }],
         };
         let old = EfenceConfig {
             interfaces: vec![Interface {
                 name: "eth0".to_string(),
-                udp_ingress: Some(udp_policy(Action::Pass, &[("old", 80)])),
-                tcp_ingress: None,
+                udp: Some(udp_policy(&[("old", 80)])),
+                tcp: None,
             }],
         };
         new.merge(&old);
-        let udp = new.interfaces[0].udp_ingress.as_ref().unwrap();
-        assert_eq!(udp.default_action, Action::Pass);
+        let udp = new.interfaces[0].udp.as_ref().unwrap();
         assert_eq!(udp.allow_list[0].name, "old");
     }
 }

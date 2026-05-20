@@ -9,7 +9,7 @@ use aya_ebpf::{
     macros::btf_map,
     programs::XdpContext,
 };
-use aya_log_ebpf::{info, warn};
+use aya_log_ebpf::warn;
 use efence_core::{EVENT_MONITOR_BUF_SIZE, Tcp4EventRaw, Udp4EventRaw};
 use network_types::{ip::Ipv4Hdr, tcp::TcpHdr};
 
@@ -95,7 +95,6 @@ pub fn try_monitor_udp(
         disable_monitor();
         return;
     }
-    info!(ctx, "received a UDP packet",);
 }
 
 pub fn try_monitor_tcp(
@@ -112,7 +111,7 @@ pub fn try_monitor_tcp(
     let ack = unsafe { (*tcphdr).ack() };
     let syn = unsafe { (*tcphdr).syn() };
     if ack != 0 && syn == 0 {
-        let ip_hdr_len = unsafe { (*ipv4hdr).ihl() as u16 * 4 };
+        let ip_hdr_len = unsafe { (*ipv4hdr).ihl() as u16 };
         let tcp_hdr_len = unsafe { (*tcphdr).doff() as u16 * 4 };
         let ip_tot_len = unsafe { (*ipv4hdr).tot_len() };
         if ip_tot_len == ip_hdr_len + tcp_hdr_len {
@@ -126,7 +125,6 @@ pub fn try_monitor_tcp(
                 disable_monitor();
                 return;
             }
-            info!(ctx, "received a TCP handshake ACK packet",);
         }
     }
 }

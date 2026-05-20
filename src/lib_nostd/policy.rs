@@ -111,9 +111,55 @@ pub const MAX_PREFIX_PORT_ENTRIES: u32 = 16384;
 /// Maximum size in bytes of the serialized [`EfenceConfig`] JSON blob.
 pub const CFG_BLOB_LEN: usize = 65536;
 
+/// Map name for the per-interface TCP ACK flood protection enabled flag.
+///
+/// `BPF_MAP_TYPE_HASH` keyed by interface index (`u32`), value `u32`
+/// (`0` = disabled, `1` = enabled).
+pub const MAP_TCP_ACK_FLOOD_PROTECTION_ENABLED: &str =
+    "TCP_ACK_FLOOD_PROT_ENABLED";
+
+/// Map name for the early port allow-list.
+///
+/// Key: [`PortKey`] `(ifindex, port)`.  Value: `1` (present = allowed).
+/// Used to short-circuit the XDP pipeline: a SYN to a port that is not
+/// in this map is dropped before ACK flood protection runs.
+pub const MAP_PORT_ALLOW_LIST: &str = "PORT_ALLOW_LIST";
+
+/// Array storing the per-protocol default action.
+///
+/// Index 0 = UDP, Index 1 = TCP.
+/// When the entry is [`ACTION_PASS`] the eBPF program skips all processing
+/// for that protocol and unconditionally passes the packet. When the entry
+/// is [`ACTION_DROP`] the program proceeds with the normal policy filter.
+///
+/// `efctl apply` sets the entry to `ACTION_PASS` when no interface defines
+/// the corresponding protocol section, and to `ACTION_DROP` when at least
+/// one interface does.
+pub const MAP_PROTO_DFLT: &str = "PROTO_DFLT";
+
+/// Index of the UDP entry in [`MAP_PROTO_DFLT`].
+pub const PROTO_DFLT_UDP: u32 = 0;
+
+/// Index of the TCP entry in [`MAP_PROTO_DFLT`].
+pub const PROTO_DFLT_TCP: u32 = 1;
+
+/// Map name for the source-IP-to-ISN tracker used by TCP ACK flood
+/// protection.
+///
+/// `BPF_MAP_TYPE_HASH` keyed by source IPv4 address (`[u8; 4]`, network
+/// byte order), value `u32` (sequence number from the completed handshake
+/// ACK, used as the ISN baseline).
+pub const MAP_TCP_ACK_ISN_TRACKER: &str = "TCP_ACK_ISN_TRACKER";
+
+/// Maximum number of entries in [`MAP_TCP_ACK_ISN_TRACKER`].
+pub const MAX_TCP_ACK_ISN_ENTRIES: u32 = 32768;
+
 /// Ring buffer byte size for event monitoring (`UDP4_EVENTS` and
 /// `TCP4_EVENTS`). Must be a power of 2 and page-aligned (multiple of 4096).
 pub const EVENT_MONITOR_BUF_SIZE: usize = 128 * 1024;
+
+/// Maximum number of entries in [`MAP_PORT_ALLOW_LIST`].
+pub const MAX_PORT_ALLOW_LIST_ENTRIES: u32 = 16384;
 
 /// Reserved inner-port-map key used to mean "any source port".
 ///
@@ -201,6 +247,29 @@ impl PrefixPort {
     pub const fn new(prefix: Ipv4Cidr, port: u16) -> Self {
         Self {
             prefix,
+            port,
+            _pad: [0; 2],
+        }
+    }
+}
+
+/// Key for the early-port allow-list map [`MAP_PORT_ALLOW_LIST`].
+///
+/// `ifindex` is the network interface index; `port` is the transport-layer
+/// port in host byte order.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PortKey {
+    pub ifindex: u32,
+    pub port: u16,
+    pub _pad: [u8; 2],
+}
+
+impl PortKey {
+    #[inline]
+    pub const fn new(ifindex: u32, port: u16) -> Self {
+        Self {
+            ifindex,
             port,
             _pad: [0; 2],
         }

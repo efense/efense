@@ -1,0 +1,19 @@
+interfaces:
+  - name: enp2s0
+    tcp:
+      protections:
+        # Drop illegal TCP ACK before send to kernel process.
+        # default is false
+        tcp_ack_flood: true
+      # allow TCP connection initialized by current host
+      # default is true
+      allow_outgoing: true
+      # Once tcp section defined, by default, all incoming TCP connection
+      # will be silently dropped unless explicitly defined in `allow_list`.
+      allow_list:
+      - name: sshd
+        # source IP ranges which are allowed to connect
+        src_ip_ranges:
+        - 192.168.122.0/24
+        # The TCP port local server is listening
+        port: 22

@@ -8,31 +8,24 @@ use std::{
 use efence_core::Udp4EventRaw;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    config::Action,
-    event::{BOOT_TIME, deserialize_timestamp, serialize_timestamp},
-    ip::Ipv4Cidr,
-};
+use crate::event::{BOOT_TIME, deserialize_timestamp, serialize_timestamp};
 
 /// Policy for UDP ingress on a single interface.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UdpIngressPolicy {
-    pub default_action: Action,
     #[serde(default)]
     pub allow_list: Vec<Udp4IngressRule>,
 }
 
 /// A single rule entry inside a UDP ingress `allow_list`.
 ///
-/// Either `src_ip`, `src_port`, or both may be present. A missing
-/// `src_ip` is treated as `0.0.0.0/0` (match any source address); a
-/// missing `src_port` is treated as "any source port" for the matched
-/// prefix.
+/// `src_ip_ranges` can be empty to match any source address. A missing
+/// `src_port` is treated as "any source port" for the matched prefix.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Udp4IngressRule {
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub src_ip: Option<Ipv4Cidr>,
+    #[serde(default)]
+    pub src_ip_ranges: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub src_port: Option<u16>,
 }

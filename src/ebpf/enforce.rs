@@ -16,9 +16,8 @@
 //! 3. Look up `(matched_prefix, src_port)` in the flat
 //!    [`UDP_IN_PORT_ACT`](UDP_PORT_ACTION) hash. If miss, try the
 //!    `(matched_prefix, PORT_ANY)` "any source port" fallback.
-//! 4. If everything missed, return the per-interface default action from
-//!    [`UDP_IN_IFACE_DFLT`](UDP_IFACE_DEFAULT_ACTION), defaulting to `XDP_PASS`
-//!    if even that map has no entry for this interface.
+//! 4. If everything missed, the packet is dropped (the default action is always
+//!    `drop`).
 //!
 //! **TCP:**
 //!
@@ -30,9 +29,8 @@
 //! 3. Look up `(matched_prefix, dst_port)` in the flat
 //!    [`TCP_IN_PORT_ACT`](TCP_PORT_ACTION) hash. If miss, try the
 //!    `(matched_prefix, PORT_ANY)` "any destination port" fallback.
-//! 4. If everything missed, return the per-interface TCP default action from
-//!    [`TCP_IN_IFACE_DFLT`](TCP_IFACE_DEFAULT_ACTION), defaulting to
-//!    `XDP_PASS`.
+//! 4. If everything missed, the packet is dropped (the default action is always
+//!    `drop`).
 
 use aya_ebpf::{
     bindings::xdp_action,
@@ -41,9 +39,11 @@ use aya_ebpf::{
     maps::HashMap,
     programs::XdpContext,
 };
+use aya_log_ebpf::debug;
 use efence_core::{
     ACTION_PASS, ALLOW_OUTGOING_FLAG, CFG_BLOB_LEN, EfenceErrorCode, Ipv4Cidr,
-    MAX_IFACES, MAX_PREFIX_PORT_ENTRIES, MAX_PREFIXES, PORT_ANY, PrefixPort,
+    MAX_IFACES, MAX_PORT_ALLOW_LIST_ENTRIES, MAX_PREFIX_PORT_ENTRIES,
+    MAX_PREFIXES, MAX_TCP_ACK_ISN_ENTRIES, PORT_ANY, PortKey, PrefixPort,
 };
 use network_types::{
     eth::{EthHdr, EtherType},
@@ -53,6 +53,8 @@ use network_types::{
 };
 
 use crate::ptr_at;
+
+const TCP_HDR_ACK_BIT: u8 = 0x10; // ACK flag in the TCP header's flags field
 
 // ---------------------------------------------------------------------------
 // Maps
@@ -76,11 +78,6 @@ static UDP_IFACE_TO_LPM: HashOfMaps<
 static UDP_PORT_ACTION: HashMap<PrefixPort, u32> =
     HashMap::<PrefixPort, u32>::with_max_entries(MAX_PREFIX_PORT_ENTRIES, 0);
 
-/// Per-interface UDP default action.
-#[map(name = "UDP_IN_IFACE_DFLT")]
-static UDP_IFACE_DEFAULT_ACTION: HashMap<u32, u32> =
-    HashMap::<u32, u32>::with_max_entries(MAX_IFACES, 0);
-
 /// Per-interface TCP-ingress LPM trie.
 #[btf_map(name = "TCP_IN_IF2LPM")]
 static TCP_IFACE_TO_LPM: HashOfMaps<
@@ -95,10 +92,49 @@ static TCP_IFACE_TO_LPM: HashOfMaps<
 static TCP_PORT_ACTION: HashMap<PrefixPort, u32> =
     HashMap::<PrefixPort, u32>::with_max_entries(MAX_PREFIX_PORT_ENTRIES, 0);
 
-/// Per-interface TCP default action.
+/// Per-interface TCP allow-outgoing flag.
+///
+/// Key: interface index (`u32`).  Value: `ALLOW_OUTGOING_FLAG` if outgoing
+/// connections are permitted, `0` otherwise.
 #[map(name = "TCP_IN_IFACE_DFLT")]
-static TCP_IFACE_DEFAULT_ACTION: HashMap<u32, u32> =
+static TCP_IFACE_ALLOW_OUTGOING: HashMap<u32, u32> =
     HashMap::<u32, u32>::with_max_entries(MAX_IFACES, 0);
+
+// ---------------------------------------------------------------------------
+// TCP ACK flood protection maps
+// ---------------------------------------------------------------------------
+
+/// Per-interface TCP ACK flood protection enabled flag.
+///
+/// Key: interface index (`u32`).  Value: `0` = disabled, `1` = enabled.
+#[map(name = "TCP_ACK_FLOOD_PROT_ENABLED")]
+static TCP_ACK_FLOOD_PROT_ENABLED: HashMap<u32, u32> =
+    HashMap::<u32, u32>::with_max_entries(MAX_IFACES, 0);
+
+/// Source-IP → handshake sequence-number tracker.
+///
+/// Populated at runtime when a handshake-completing ACK is observed.
+/// Keyed by source IPv4 address in network byte order.
+#[map(name = "TCP_ACK_ISN_TRACKER")]
+static TCP_ACK_ISN_TRACKER: HashMap<[u8; 4], u32> =
+    HashMap::<[u8; 4], u32>::with_max_entries(MAX_TCP_ACK_ISN_ENTRIES, 0);
+
+/// Early port allow-list.
+///
+/// Key: [`PortKey`] `(ifindex, port)`.  Value: `1` (present = allowed).
+/// A SYN whose `(ifindex, dst_port)` is not in this map is dropped before
+/// ACK flood protection runs.
+#[map(name = "PORT_ALLOW_LIST")]
+static PORT_ALLOW_LIST: HashMap<PortKey, u32> =
+    HashMap::<PortKey, u32>::with_max_entries(MAX_PORT_ALLOW_LIST_ENTRIES, 0);
+
+/// Per-protocol default action.
+///
+/// Index 0 = UDP default action, Index 1 = TCP default action.
+/// When set to [`ACTION_PASS`] the eBPF program returns `XDP_PASS`
+/// immediately, skipping all processing for that protocol.
+#[btf_map(name = "PROTO_DFLT")]
+static PROTO_DFLT: Array<u32, 2, 0> = Array::new();
 
 /// Serialized JSON blob of the userspace `EfenceConfig`. Opaque to the
 /// kernel program: it is only ever read by `efctl show`. Declared here
@@ -115,14 +151,14 @@ static CFG_LEN: Array<u32, 1, 0> = Array::new();
 // ---------------------------------------------------------------------------
 
 #[xdp]
-pub fn efence_net_ingress_apply(ctx: XdpContext) -> u32 {
-    match try_efence_net_ingress_apply(&ctx) {
+pub fn efence_net_xdp_ingress_apply(ctx: XdpContext) -> u32 {
+    match try_efence_net_xdp_ingress_apply(&ctx) {
         Ok(action) => action,
         Err(_) => xdp_action::XDP_PASS,
     }
 }
 
-fn try_efence_net_ingress_apply(
+fn try_efence_net_xdp_ingress_apply(
     ctx: &XdpContext,
 ) -> Result<u32, EfenceErrorCode> {
     let ethhdr: *const EthHdr = ptr_at(ctx, 0)?;
@@ -139,10 +175,22 @@ fn try_efence_net_ingress_apply(
 
     match proto {
         IpProto::Udp => {
+            // Early skip: if the protocol-level default is PASS, allow all
+            // UDP traffic without any further processing.
+            if let Some(&v) = PROTO_DFLT.get(0) {
+                if v == ACTION_PASS {
+                    return Ok(xdp_action::XDP_PASS);
+                }
+            }
             let udphdr: *const UdpHdr =
                 ptr_at(ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
             let src_port: u16 = unsafe { (*udphdr).src_port() };
             let dst_port: u16 = unsafe { (*udphdr).dst_port() };
+            // Early port allow-list check for UDP.
+            let udp_key = PortKey::new(ifindex, src_port);
+            if unsafe { PORT_ALLOW_LIST.get(&udp_key) }.is_none() {
+                return Ok(xdp_action::XDP_DROP);
+            }
             let action = decide_udp(ifindex, src_ip, src_port);
             crate::monitor::try_monitor_udp(
                 ctx, ipv4hdr, src_ip, src_port, dst_port,
@@ -150,10 +198,37 @@ fn try_efence_net_ingress_apply(
             Ok(action)
         }
         IpProto::Tcp => {
+            // Early skip: if the protocol-level default is PASS, allow all
+            // TCP traffic without any further processing.
+            if let Some(&v) = PROTO_DFLT.get(1) {
+                if v == ACTION_PASS {
+                    return Ok(xdp_action::XDP_PASS);
+                }
+            }
             let tcphdr: *const TcpHdr =
                 ptr_at(ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
             let src_port: u16 = unsafe { u16::from_be_bytes((*tcphdr).source) };
             let dst_port: u16 = unsafe { u16::from_be_bytes((*tcphdr).dest) };
+
+            // Early port allow-list check: drop SYN to non-allowed ports.
+            let tcp_key = PortKey::new(ifindex, dst_port);
+            let port_allowed =
+                unsafe { PORT_ALLOW_LIST.get(&tcp_key) }.is_some();
+            if !port_allowed {
+                let is_syn = unsafe { (*tcphdr).syn() } != 0;
+                let is_ack = unsafe { (*tcphdr).ack() } != 0;
+                if is_syn && !is_ack {
+                    return Ok(xdp_action::XDP_DROP);
+                }
+            }
+
+            // Run TCP ACK flood protection before the regular filter.
+            if let Some(action) =
+                protect_tcp_ack_flood(ctx, ifindex, src_ip, ipv4hdr, tcphdr)?
+            {
+                return Ok(action);
+            }
+
             let action = decide_tcp(ifindex, src_ip, dst_port, tcphdr);
             crate::monitor::try_monitor_tcp(
                 ctx, ipv4hdr, src_ip, src_port, dst_port, tcphdr,
@@ -175,7 +250,7 @@ fn decide_udp(ifindex: u32, src_ip: [u8; 4], src_port: u16) -> u32 {
     let lpm_key = LpmKey::new(32, src_ip);
     let matched_prefix: Ipv4Cidr = match inner_lpm.get(&lpm_key) {
         Some(p) => *p,
-        None => return udp_iface_default_action(ifindex),
+        None => return xdp_action::XDP_DROP,
     };
 
     let key_exact = PrefixPort::new(matched_prefix, src_port);
@@ -187,7 +262,7 @@ fn decide_udp(ifindex: u32, src_ip: [u8; 4], src_port: u16) -> u32 {
         return action_to_xdp(*action);
     }
 
-    udp_iface_default_action(ifindex)
+    xdp_action::XDP_DROP
 }
 
 /// Decide the fate of a TCP packet using TCP-specific maps.
@@ -204,11 +279,11 @@ fn decide_tcp(
     };
 
     // Check whether allow_outgoing is set for this interface.
-    let iface_raw = unsafe { TCP_IFACE_DEFAULT_ACTION.get(&ifindex) }
+    let allow_outgoing = unsafe { TCP_IFACE_ALLOW_OUTGOING.get(&ifindex) }
         .map(|v| *v)
-        .unwrap_or(ACTION_PASS);
+        .unwrap_or(0);
 
-    if (iface_raw & ALLOW_OUTGOING_FLAG) != 0 {
+    if (allow_outgoing & ALLOW_OUTGOING_FLAG) != 0 {
         let syn = unsafe { (*tcphdr).syn() };
         // Pass everything except pure SYNs (syn=1, ack=0), which are
         // new incoming connection requests and still get filtered.
@@ -241,21 +316,8 @@ fn decide_tcp(
 }
 
 #[inline(always)]
-fn udp_iface_default_action(ifindex: u32) -> u32 {
-    let action = match unsafe { UDP_IFACE_DEFAULT_ACTION.get(ifindex) } {
-        Some(a) => *a,
-        None => ACTION_PASS,
-    };
-    action_to_xdp(action)
-}
-
-#[inline(always)]
-fn tcp_iface_default_action(ifindex: u32) -> u32 {
-    let action = match unsafe { TCP_IFACE_DEFAULT_ACTION.get(ifindex) } {
-        Some(a) => *a,
-        None => ACTION_PASS,
-    };
-    action_to_xdp(action)
+fn tcp_iface_default_action(_ifindex: u32) -> u32 {
+    xdp_action::XDP_DROP
 }
 
 #[inline(always)]
@@ -264,5 +326,105 @@ fn action_to_xdp(action: u32) -> u32 {
         0 => xdp_action::XDP_PASS, // ACTION_PASS
         1 => xdp_action::XDP_DROP, // ACTION_DROP
         _ => xdp_action::XDP_PASS,
+    }
+}
+
+/// TCP ACK flood protection — runs before [`decide_tcp`].
+///
+/// Returns `Ok(Some(action))` when the protection decides the packet's
+/// fate, or `Ok(None)` to fall through to the regular TCP filter.
+///
+/// ## Behaviour
+///
+/// * **SYN** (new incoming connection): records `src_ip + ISN` in the tracker
+///   so that the eventual ACK completing the handshake can be validated.
+/// * **SYN-ACK** (response to an outbound SYN): records `src_ip + ISN` only
+///   when [`allow_outgoing`] is set for this interface.  When `allow_outgoing`
+///   is `false` the SYN-ACK is silently skipped — no outbound connection could
+///   have produced it, so there is nothing to track.
+/// * **ACK with payload** (data): looks up `src_ip` in the tracker.
+///     - No entry ⟹ drop (no completed handshake observed).
+///     - Entry exists but `current_seq - stored_seq` (wrapping) exceeds
+///       [`TCP_ACK_MAX_WINDOW`] ⟹ drop (sequence out of reasonable range).
+///     - Otherwise ⟹ update the tracker with the latest `seq` and pass.
+#[inline(always)]
+fn protect_tcp_ack_flood(
+    ctx: &XdpContext,
+    ifindex: u32,
+    src_ip: [u8; 4],
+    ipv4hdr: *const Ipv4Hdr,
+    tcphdr: *const TcpHdr,
+) -> Result<Option<u32>, EfenceErrorCode> {
+    // Check if ACK flood protection is enabled on this interface.
+    match unsafe { TCP_ACK_FLOOD_PROT_ENABLED.get(&ifindex) } {
+        Some(v) if *v == 0 => return Ok(None),
+        None => return Ok(None),
+        _ => (),
+    }
+
+    let is_ack = unsafe { (*tcphdr).ack() } != 0;
+    let is_syn = unsafe { (*tcphdr).syn() } != 0;
+    let seq = unsafe { u32::from_be_bytes((*tcphdr).seq) };
+    let src = unsafe { u32::from_be_bytes((*tcphdr).seq) };
+
+    let allow_outgoing = unsafe { TCP_IFACE_ALLOW_OUTGOING.get(&ifindex) }
+        .map(|v| *v)
+        .unwrap_or(0)
+        != 0;
+
+    // For SYN or SYN-ACK packet, record the IP and its ISN.
+    //
+    // SYN-ACKs are only meaningful when allow_outgoing is true (they are
+    // responses to outbound SYNs from this host).  When allow_outgoing
+    // is false there is no legitimate SYN-ACK to track.
+    if is_syn {
+        // If we don't allow outgoing connections, then we shouldn't see any
+        // SYN-ACKs and drop if ever happens.
+        if is_ack && !allow_outgoing {
+            debug!(
+                ctx,
+                "DROP SYN-ACK because allow_outgoing=false, from src={:i} \
+                 seq={}",
+                src,
+                seq
+            );
+            return Ok(Some(xdp_action::XDP_DROP));
+        }
+        let _ = TCP_ACK_ISN_TRACKER.insert(&src_ip, &seq, 0);
+        debug!(ctx, "ACK_TRACK: learned src={:i} seq={}", src, seq);
+        return Ok(None);
+    }
+
+    match unsafe { TCP_ACK_ISN_TRACKER.get(&src_ip) } {
+        Some(pre_seq) => {
+            let delta = seq.wrapping_sub(*pre_seq);
+            // The windows option is u16, hence ACK should not advance more
+            // than 0xffff from the previous ACK.
+            if delta > 0xffff {
+                debug!(
+                    ctx,
+                    "ACK_TRACK: DROP src={:i} seq={} stored={} delta={}",
+                    src,
+                    seq,
+                    *pre_seq,
+                    delta,
+                );
+                return Ok(Some(xdp_action::XDP_DROP));
+            }
+            // Slide window forward.
+            let _ = TCP_ACK_ISN_TRACKER.insert(&src_ip, &seq, 0);
+            debug!(
+                ctx,
+                "ACK_TRACK: pass src={:i} seq={} delta={}", src, seq, delta
+            );
+            Ok(None)
+        }
+        None => {
+            debug!(
+                ctx,
+                "ACK_TRACK: DROP src={:i} seq={} (no tracker entry)", src, seq,
+            );
+            Ok(Some(xdp_action::XDP_DROP))
+        }
     }
 }

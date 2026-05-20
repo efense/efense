@@ -32,11 +32,11 @@ cargo run -- purge
 echo '---
 interfaces:
   - name: enp2s0
-    udp_ingress:
-      default_action: drop
+    udp:
       allow_list:
       - name: allow_dns_query
-        src_ip: 192.168.122.0/24
+        src_ip_ranges:
+        - 192.168.122.0/24
         src_port: 53' | cargo run -- apply -
 ```
 
@@ -46,14 +46,14 @@ interfaces:
 echo '---
 interfaces:
   - name: enp2s0
-    tcp_ingress:
-      default_action: drop
+    tcp:
       # allow TCP connection initialized by current host
       allow_outgoing: true
       allow_list:
-      - name: allow_dns_query
-        src_ip: 192.168.122.0/24
-        dst_port: 22' | cargo run -- apply -
+      - name: allow_ssh
+        src_ip_ranges:
+        - 192.168.122.0/24
+        port: 22' | cargo run -- apply -
 ```
 
 ## License

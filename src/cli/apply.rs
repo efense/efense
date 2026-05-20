@@ -18,16 +18,18 @@ use aya::{
     },
 };
 use efence::{
-    Action, EfenceConfig, EfenceError, Interface, Ipv4CidrPod, PrefixPortPod,
-    Tcp4IngressRule, TcpIngressPolicy, Udp4IngressRule, UdpIngressPolicy,
+    Action, EfenceConfig, EfenceError, Interface, Ipv4CidrPod, PortKeyPod,
+    PrefixPortPod, Tcp4IngressRule, TcpIngressPolicy, Udp4IngressRule,
+    UdpIngressPolicy,
 };
 use efence_core::{
     ACTION_DROP, ACTION_PASS, ALLOW_OUTGOING_FLAG, CFG_BLOB_LEN, Ipv4Cidr,
-    MAP_CFG, MAP_CFG_LEN, MAP_MONITOR_ENABLED,
-    MAP_TCP_INGRESS_IFACE_DEFAULT_ACTION, MAP_TCP_INGRESS_IFACE_TO_LPM,
-    MAP_TCP_INGRESS_PORT_ACTION, MAP_TCP4_EVENTS,
-    MAP_UDP_INGRESS_IFACE_DEFAULT_ACTION, MAP_UDP_INGRESS_IFACE_TO_LPM,
-    MAP_UDP_INGRESS_PORT_ACTION, MAP_UDP4_EVENTS, MAX_PREFIXES, PORT_ANY,
+    MAP_CFG, MAP_CFG_LEN, MAP_MONITOR_ENABLED, MAP_PORT_ALLOW_LIST,
+    MAP_PROTO_DFLT, MAP_TCP_ACK_FLOOD_PROTECTION_ENABLED,
+    MAP_TCP_ACK_ISN_TRACKER, MAP_TCP_INGRESS_IFACE_DEFAULT_ACTION,
+    MAP_TCP_INGRESS_IFACE_TO_LPM, MAP_TCP_INGRESS_PORT_ACTION, MAP_TCP4_EVENTS,
+    MAP_UDP_INGRESS_IFACE_TO_LPM, MAP_UDP_INGRESS_PORT_ACTION, MAP_UDP4_EVENTS,
+    MAX_PREFIXES, PORT_ANY, PROTO_DFLT_TCP, PROTO_DFLT_UDP, PortKey,
     PrefixPort,
 };
 use log::debug;
@@ -38,7 +40,7 @@ use crate::pin::{
 };
 
 const ARG_CONFIG: &str = "CONFIG";
-pub(crate) const PROG_NAME: &str = "efence_net_ingress_apply";
+pub(crate) const PROG_NAME: &str = "efence_net_xdp_ingress_apply";
 
 /// `BPF_F_NO_PREALLOC` flag value (1). The kernel forces this on for
 /// LPM tries, but we set it explicitly so the inner LPM template we
@@ -52,6 +54,7 @@ impl CommandApply {
 
     pub(crate) fn new_cmd() -> clap::Command {
         clap::Command::new(Self::CMD)
+            .alias("a")
             .about("Load efense configuration into the kernel")
             .arg(clap::Arg::new(ARG_CONFIG).required(true).help(
                 "Path to the YAML configuration file, or '-' to read YAML \
@@ -114,6 +117,17 @@ fn apply(mut cfg: EfenceConfig) -> Result<(), EfenceError> {
         cfg.merge(&current);
     }
 
+    if cfg
+        .interfaces
+        .iter()
+        .any(|i| i.tcp.as_ref().is_some_and(|t| t.protections.tcp_ack_flood))
+    {
+        log::warn!(
+            "all prior TCP connection will be terminated, e.g. ssh need \
+             relogin"
+        );
+    }
+
     let mut ebpf = load_ebpf_program()?;
 
     populate_maps(&mut ebpf, &cfg)?;
@@ -137,13 +151,18 @@ fn populate_maps(
     let udp_by_iface = collect_udp_per_iface(cfg)?;
     let tcp_by_iface = collect_tcp_per_iface(cfg)?;
 
-    populate_udp_iface_default_action(ebpf, &udp_by_iface)?;
     populate_udp_iface_to_lpm(ebpf, &udp_by_iface)?;
     populate_udp_port_action(ebpf, &udp_by_iface)?;
 
     populate_tcp_iface_default_action(ebpf, &tcp_by_iface)?;
     populate_tcp_iface_to_lpm(ebpf, &tcp_by_iface)?;
     populate_tcp_port_action(ebpf, &tcp_by_iface)?;
+
+    populate_proto_dflt(ebpf, cfg)?;
+
+    populate_tcp_ack_flood_protection(ebpf, cfg)?;
+
+    populate_port_allow_list(ebpf, cfg)?;
 
     write_cfg_blob(ebpf, cfg)?;
 
@@ -167,22 +186,18 @@ fn collect_udp_per_iface(
 ) -> Result<StdHashMap<u32, IfacePolicy>, EfenceError> {
     let mut by_iface: StdHashMap<u32, IfacePolicy> = StdHashMap::new();
     for iface in &cfg.interfaces {
-        let UdpIngressPolicy {
-            default_action,
-            allow_list,
-        } = match iface.udp_ingress.as_ref() {
+        let UdpIngressPolicy { allow_list } = match iface.udp.as_ref() {
             Some(p) => p,
             None => continue,
         };
 
         let ifindex = lookup_ifindex(&iface.name)?;
         let entry = by_iface.entry(ifindex).or_insert(IfacePolicy {
-            default_action: *default_action,
+            default_action: Action::Drop,
             allow_outgoing: false,
             prefixes: HashSet::new(),
             port_rules: Vec::new(),
         });
-        entry.default_action = *default_action;
 
         for rule in allow_list {
             expand_udp_rule(rule, entry)?;
@@ -197,22 +212,21 @@ fn collect_tcp_per_iface(
     let mut by_iface: StdHashMap<u32, IfacePolicy> = StdHashMap::new();
     for iface in &cfg.interfaces {
         let TcpIngressPolicy {
-            default_action,
             allow_list,
             allow_outgoing,
-        } = match iface.tcp_ingress.as_ref() {
+            ..
+        } = match iface.tcp.as_ref() {
             Some(p) => p,
             None => continue,
         };
 
         let ifindex = lookup_ifindex(&iface.name)?;
         let entry = by_iface.entry(ifindex).or_insert(IfacePolicy {
-            default_action: *default_action,
+            default_action: Action::Drop,
             allow_outgoing: *allow_outgoing,
             prefixes: HashSet::new(),
             port_rules: Vec::new(),
         });
-        entry.default_action = *default_action;
         entry.allow_outgoing = *allow_outgoing;
 
         for rule in allow_list {
@@ -226,16 +240,30 @@ fn expand_udp_rule(
     rule: &Udp4IngressRule,
     out: &mut IfacePolicy,
 ) -> Result<(), EfenceError> {
-    let prefix = udp_rule_prefix(rule);
-    out.prefixes.insert(prefix);
-
     let action = match out.default_action {
         Action::Drop => Action::Pass,
         Action::Pass => Action::Drop,
     };
 
     let port = rule.src_port.unwrap_or(PORT_ANY);
-    out.port_rules.push((prefix, port, action));
+
+    if rule.src_ip_ranges.is_empty() {
+        let prefix = Ipv4Cidr::any();
+        out.prefixes.insert(prefix);
+        out.port_rules.push((prefix, port, action));
+    } else {
+        for range_str in &rule.src_ip_ranges {
+            let cidr = efence::Ipv4Cidr::parse(range_str).map_err(|e| {
+                EfenceError::from(format!(
+                    "invalid src_ip_range {range_str:?} in rule '{}': {e}",
+                    rule.name
+                ))
+            })?;
+            let prefix = Ipv4Cidr::new(cidr.addr.octets(), cidr.prefix_len);
+            out.prefixes.insert(prefix);
+            out.port_rules.push((prefix, port, action));
+        }
+    }
     Ok(())
 }
 
@@ -243,31 +271,31 @@ fn expand_tcp_rule(
     rule: &Tcp4IngressRule,
     out: &mut IfacePolicy,
 ) -> Result<(), EfenceError> {
-    let prefix = tcp_rule_prefix(rule);
-    out.prefixes.insert(prefix);
-
     let action = match out.default_action {
         Action::Drop => Action::Pass,
         Action::Pass => Action::Drop,
     };
 
-    let port = rule.dst_port.unwrap_or(PORT_ANY);
-    out.port_rules.push((prefix, port, action));
+    let port = rule.port;
+
+    if rule.src_ip_ranges.is_empty() {
+        let prefix = Ipv4Cidr::any();
+        out.prefixes.insert(prefix);
+        out.port_rules.push((prefix, port, action));
+    } else {
+        for range_str in &rule.src_ip_ranges {
+            let cidr = efence::Ipv4Cidr::parse(range_str).map_err(|e| {
+                EfenceError::from(format!(
+                    "invalid src_ip_range {range_str:?} in rule '{}': {e}",
+                    rule.name
+                ))
+            })?;
+            let prefix = Ipv4Cidr::new(cidr.addr.octets(), cidr.prefix_len);
+            out.prefixes.insert(prefix);
+            out.port_rules.push((prefix, port, action));
+        }
+    }
     Ok(())
-}
-
-fn udp_rule_prefix(rule: &Udp4IngressRule) -> Ipv4Cidr {
-    match rule.src_ip {
-        Some(cidr) => Ipv4Cidr::new(cidr.addr.octets(), cidr.prefix_len),
-        None => Ipv4Cidr::any(),
-    }
-}
-
-fn tcp_rule_prefix(rule: &Tcp4IngressRule) -> Ipv4Cidr {
-    match rule.src_ip {
-        Some(cidr) => Ipv4Cidr::new(cidr.addr.octets(), cidr.prefix_len),
-        None => Ipv4Cidr::any(),
-    }
 }
 
 fn lookup_ifindex(name: &str) -> Result<u32, EfenceError> {
@@ -284,24 +312,6 @@ fn lookup_ifindex(name: &str) -> Result<u32, EfenceError> {
     Ok(idx)
 }
 
-fn populate_udp_iface_default_action(
-    ebpf: &mut aya::Ebpf,
-    by_iface: &StdHashMap<u32, IfacePolicy>,
-) -> Result<(), EfenceError> {
-    let map = ebpf
-        .map_mut(MAP_UDP_INGRESS_IFACE_DEFAULT_ACTION)
-        .ok_or_else(|| {
-            EfenceError::from(format!(
-                "{MAP_UDP_INGRESS_IFACE_DEFAULT_ACTION} map not found"
-            ))
-        })?;
-    let mut hm: AyaHashMap<&mut MapData, u32, u32> = AyaHashMap::try_from(map)?;
-    for (ifindex, policy) in by_iface {
-        hm.insert(ifindex, action_value(policy.default_action), 0)?;
-    }
-    Ok(())
-}
-
 fn populate_tcp_iface_default_action(
     ebpf: &mut aya::Ebpf,
     by_iface: &StdHashMap<u32, IfacePolicy>,
@@ -315,10 +325,11 @@ fn populate_tcp_iface_default_action(
         })?;
     let mut hm: AyaHashMap<&mut MapData, u32, u32> = AyaHashMap::try_from(map)?;
     for (ifindex, policy) in by_iface {
-        let mut v = action_value(policy.default_action);
-        if policy.allow_outgoing {
-            v |= ALLOW_OUTGOING_FLAG;
-        }
+        let v = if policy.allow_outgoing {
+            ALLOW_OUTGOING_FLAG
+        } else {
+            0
+        };
         hm.insert(ifindex, v, 0)?;
     }
     Ok(())
@@ -424,6 +435,98 @@ fn populate_tcp_port_action(
     Ok(())
 }
 
+fn populate_tcp_ack_flood_protection(
+    ebpf: &mut aya::Ebpf,
+    cfg: &EfenceConfig,
+) -> Result<(), EfenceError> {
+    let map = ebpf
+        .map_mut(MAP_TCP_ACK_FLOOD_PROTECTION_ENABLED)
+        .ok_or_else(|| {
+            EfenceError::from(format!(
+                "{MAP_TCP_ACK_FLOOD_PROTECTION_ENABLED} map not found"
+            ))
+        })?;
+    let mut hm: AyaHashMap<&mut MapData, u32, u32> = AyaHashMap::try_from(map)?;
+
+    for iface in &cfg.interfaces {
+        let enabled = iface
+            .tcp
+            .as_ref()
+            .is_some_and(|t| t.protections.tcp_ack_flood);
+        if enabled {
+            let ifindex = lookup_ifindex(&iface.name)?;
+            hm.insert(ifindex, 1u32, 0)?;
+        }
+    }
+    Ok(())
+}
+
+fn populate_proto_dflt(
+    ebpf: &mut aya::Ebpf,
+    cfg: &EfenceConfig,
+) -> Result<(), EfenceError> {
+    let mut arr: Array<&mut MapData, u32> =
+        map_array_mut(ebpf, MAP_PROTO_DFLT)?;
+
+    let udp_defined = cfg.interfaces.iter().any(|i| i.udp.is_some());
+    arr.set(
+        PROTO_DFLT_UDP,
+        if udp_defined {
+            ACTION_DROP
+        } else {
+            ACTION_PASS
+        },
+        0,
+    )?;
+
+    let tcp_defined = cfg.interfaces.iter().any(|i| i.tcp.is_some());
+    arr.set(
+        PROTO_DFLT_TCP,
+        if tcp_defined {
+            ACTION_DROP
+        } else {
+            ACTION_PASS
+        },
+        0,
+    )?;
+
+    Ok(())
+}
+
+fn populate_port_allow_list(
+    ebpf: &mut aya::Ebpf,
+    cfg: &EfenceConfig,
+) -> Result<(), EfenceError> {
+    let map = ebpf.map_mut(MAP_PORT_ALLOW_LIST).ok_or_else(|| {
+        EfenceError::from(format!("{MAP_PORT_ALLOW_LIST} map not found"))
+    })?;
+    let mut hm: AyaHashMap<&mut MapData, PortKeyPod, u32> =
+        AyaHashMap::try_from(map)?;
+
+    for iface in &cfg.interfaces {
+        let ifindex = lookup_ifindex(&iface.name)?;
+
+        // TCP ports.
+        if let Some(tcp) = &iface.tcp {
+            for rule in &tcp.allow_list {
+                let key = PortKeyPod(PortKey::new(ifindex, rule.port));
+                hm.insert(key, 1u32, 0)?;
+            }
+        }
+
+        // UDP ports.
+        if let Some(udp) = &iface.udp {
+            for rule in &udp.allow_list {
+                if let Some(port) = rule.src_port {
+                    let key = PortKeyPod(PortKey::new(ifindex, port));
+                    hm.insert(key, 1u32, 0)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn write_cfg_blob(
     ebpf: &mut aya::Ebpf,
     cfg: &EfenceConfig,
@@ -502,21 +605,22 @@ fn map_array_mut<'a, V: aya::Pod>(
 
 fn pin_maps(ebpf: &mut aya::Ebpf) -> Result<(), EfenceError> {
     // Maps under the UDP-ingress pin root.
-    let udp_ingress_maps = [
-        MAP_UDP_INGRESS_IFACE_DEFAULT_ACTION,
-        MAP_UDP_INGRESS_IFACE_TO_LPM,
-        MAP_UDP_INGRESS_PORT_ACTION,
-    ];
+    let udp_ingress_maps =
+        [MAP_UDP_INGRESS_IFACE_TO_LPM, MAP_UDP_INGRESS_PORT_ACTION];
     // Maps under the TCP-ingress pin root.
     let tcp_ingress_maps = [
         MAP_TCP_INGRESS_IFACE_DEFAULT_ACTION,
         MAP_TCP_INGRESS_IFACE_TO_LPM,
         MAP_TCP_INGRESS_PORT_ACTION,
+        MAP_TCP_ACK_FLOOD_PROTECTION_ENABLED,
+        MAP_TCP_ACK_ISN_TRACKER,
     ];
     // Maps under the shared main pin root.
     let main_maps = [
         MAP_CFG,
         MAP_CFG_LEN,
+        MAP_PORT_ALLOW_LIST,
+        MAP_PROTO_DFLT,
         MAP_UDP4_EVENTS,
         MAP_TCP4_EVENTS,
         MAP_MONITOR_ENABLED,
@@ -585,7 +689,11 @@ fn attach_and_pin_links(
 fn interfaces_with_policy(cfg: &EfenceConfig) -> Vec<&Interface> {
     cfg.interfaces
         .iter()
-        .filter(|i| i.udp_ingress.is_some() || i.tcp_ingress.is_some())
+        .filter(|i| {
+            i.udp.is_some()
+                || i.tcp.is_some()
+                || i.tcp.as_ref().is_some_and(|t| t.protections.tcp_ack_flood)
+        })
         .collect()
 }
 

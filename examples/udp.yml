@@ -1,8 +1,8 @@
 interfaces:
   - name: enp2s0
-    udp_ingress:
-      default_action: drop
+    udp:
       allow_list:
       - name: allow_dns_query
-        src_ip: 192.168.122.0/24
+        src_ip_ranges:
+        - 192.168.122.0/24
         src_port: 53

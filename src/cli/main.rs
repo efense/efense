@@ -25,7 +25,10 @@ async fn main() -> Result<(), EfenceError> {
         .subcommand(CommandShow::new_cmd());
     let matches = cli_cmd.get_matches_mut();
 
-    env_logger::init();
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("info"),
+    )
+    .init();
 
     if let Some(matches) = matches.subcommand_matches(CommandApply::CMD) {
         CommandApply::handle(matches).await

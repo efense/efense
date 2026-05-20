@@ -8,7 +8,7 @@ mod tcp;
 mod udp;
 
 pub use self::{
-    config::{Action, EfenceConfig, Interface},
+    config::{Action, EfenceConfig, Interface, PortKeyPod, Protections},
     error::{EfenceError, ErrorKind},
     event::EfenceEvent,
     ip::{Ipv4Cidr, Ipv4CidrPod},
