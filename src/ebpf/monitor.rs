@@ -36,7 +36,7 @@ static MONITOR_ENABLED: Array<u32, 1, 0> = Array::new();
 
 #[inline(always)]
 fn is_monitor_enabled() -> bool {
-    MONITOR_ENABLED.get(0).map_or(false, |v| *v != 0)
+    MONITOR_ENABLED.get(0).is_some_and(|v| *v != 0)
 }
 
 fn submit_udp4_event(event: Udp4EventRaw) {
@@ -96,7 +96,7 @@ pub fn try_monitor_tcp(
     let syn = unsafe { (*tcphdr).syn() };
     if ack != 0 && syn == 0 {
         let ip_hdr_len = unsafe { (*ipv4hdr).ihl() as u16 };
-        let tcp_hdr_len = unsafe { (*tcphdr).doff() as u16 * 4 };
+        let tcp_hdr_len = unsafe { (*tcphdr).doff() * 4 };
         let ip_tot_len = unsafe { (*ipv4hdr).tot_len() };
         if ip_tot_len == ip_hdr_len + tcp_hdr_len {
             let src = u32::from_be_bytes(src_ip);

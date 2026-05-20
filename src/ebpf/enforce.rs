@@ -155,10 +155,10 @@ fn try_efence_net_xdp_ingress_apply(
         IpProto::Udp => {
             // Early skip: if the protocol-level default is PASS, allow all
             // UDP traffic without any further processing.
-            if let Some(&v) = PROTO_DFLT.get(0) {
-                if v == ACTION_PASS {
-                    return Ok(xdp_action::XDP_PASS);
-                }
+            if let Some(&v) = PROTO_DFLT.get(0)
+                && v == ACTION_PASS
+            {
+                return Ok(xdp_action::XDP_PASS);
             }
             let udphdr: *const UdpHdr =
                 ptr_at(ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
@@ -166,7 +166,7 @@ fn try_efence_net_xdp_ingress_apply(
             let dst_port: u16 = unsafe { (*udphdr).dst_port() };
             // Early port allow-list check for UDP.
             let udp_key = PortKey::new(ifindex, src_port);
-            if unsafe { PORT_ALLOW_LIST.get(&udp_key) }.is_none() {
+            if unsafe { PORT_ALLOW_LIST.get(udp_key) }.is_none() {
                 return Ok(xdp_action::XDP_DROP);
             }
             let action = decide_udp(ifindex, src_ip, src_port);
@@ -178,10 +178,10 @@ fn try_efence_net_xdp_ingress_apply(
         IpProto::Tcp => {
             // Early skip: if the protocol-level default is PASS, allow all
             // TCP traffic without any further processing.
-            if let Some(&v) = PROTO_DFLT.get(1) {
-                if v == ACTION_PASS {
-                    return Ok(xdp_action::XDP_PASS);
-                }
+            if let Some(&v) = PROTO_DFLT.get(1)
+                && v == ACTION_PASS
+            {
+                return Ok(xdp_action::XDP_PASS);
             }
             let tcphdr: *const TcpHdr =
                 ptr_at(ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
@@ -191,7 +191,7 @@ fn try_efence_net_xdp_ingress_apply(
             // Early port allow-list check: drop SYN to non-allowed ports.
             let tcp_key = PortKey::new(ifindex, dst_port);
             let port_allowed =
-                unsafe { PORT_ALLOW_LIST.get(&tcp_key) }.is_some();
+                unsafe { PORT_ALLOW_LIST.get(tcp_key) }.is_some();
             if !port_allowed {
                 let is_syn = unsafe { (*tcphdr).syn() } != 0;
                 let is_ack = unsafe { (*tcphdr).ack() } != 0;
@@ -257,8 +257,8 @@ fn decide_tcp(
     };
 
     // Check whether allow_outgoing is set for this interface.
-    let allow_outgoing = unsafe { TCP_IFACE_ALLOW_OUTGOING.get(&ifindex) }
-        .map(|v| *v)
+    let allow_outgoing = unsafe { TCP_IFACE_ALLOW_OUTGOING.get(ifindex) }
+        .copied()
         .unwrap_or(0);
 
     if (allow_outgoing & ALLOW_OUTGOING_FLAG) != 0 {

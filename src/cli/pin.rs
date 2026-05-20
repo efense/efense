@@ -26,7 +26,6 @@
 //! /sys/fs/bpf/efence_udp_ingress/
 //!     program
 //!     map/
-//!         UDP_IN_IFACE_DFLT
 //!         UDP_IN_IF2LPM
 //!         UDP_IN_PORT_ACT
 //!     link/<iface>

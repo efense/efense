@@ -23,12 +23,6 @@ pub const ALLOW_OUTGOING_FLAG: u32 = 2;
 // Map names
 // ---------------------------------------------------------------------------
 
-/// Map name holding the per-interface default action for UDP ingress.
-///
-/// `BPF_MAP_TYPE_HASH` keyed by interface index (`u32`), value [`u32`]
-/// (`ACTION_PASS` / `ACTION_DROP`).
-pub const MAP_UDP_INGRESS_IFACE_DEFAULT_ACTION: &str = "UDP_IN_IFACE_DFLT";
-
 /// Map name of the outer hash-of-maps mapping interface index to the
 /// per-interface source-IP LPM trie.
 ///

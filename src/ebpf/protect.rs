@@ -56,7 +56,7 @@ pub fn protect_tcp_ack_flood(
     tcphdr: *const TcpHdr,
 ) -> Result<Option<u32>, EfenceErrorCode> {
     // Check if ACK flood protection is enabled on this interface.
-    match unsafe { TCP_ACK_FLOOD_PROT_ENABLED.get(&ifindex) } {
+    match unsafe { TCP_ACK_FLOOD_PROT_ENABLED.get(ifindex) } {
         Some(v) if *v == 0 => return Ok(None),
         None => return Ok(None),
         _ => (),
@@ -67,8 +67,8 @@ pub fn protect_tcp_ack_flood(
     let seq = unsafe { u32::from_be_bytes((*tcphdr).seq) };
     let src = unsafe { u32::from_be_bytes((*tcphdr).seq) };
 
-    let allow_outgoing = unsafe { TCP_IFACE_ALLOW_OUTGOING.get(&ifindex) }
-        .map(|v| *v)
+    let allow_outgoing = unsafe { TCP_IFACE_ALLOW_OUTGOING.get(ifindex) }
+        .copied()
         .unwrap_or(0)
         != 0;
 
@@ -83,12 +83,12 @@ pub fn protect_tcp_ack_flood(
             );
             return Ok(Some(xdp_action::XDP_DROP));
         }
-        let _ = TCP_ACK_ISN_TRACKER.insert(&src_ip, &seq, 0);
+        let _ = TCP_ACK_ISN_TRACKER.insert(src_ip, seq, 0);
         debug!(ctx, "ACK_TRACK: learned src={:i} seq={}", src, seq);
         return Ok(None);
     }
 
-    match unsafe { TCP_ACK_ISN_TRACKER.get(&src_ip) } {
+    match unsafe { TCP_ACK_ISN_TRACKER.get(src_ip) } {
         Some(pre_seq) => {
             let delta = seq.wrapping_sub(*pre_seq);
             if delta > 0xffff {
@@ -102,7 +102,7 @@ pub fn protect_tcp_ack_flood(
                 );
                 return Ok(Some(xdp_action::XDP_DROP));
             }
-            let _ = TCP_ACK_ISN_TRACKER.insert(&src_ip, &seq, 0);
+            let _ = TCP_ACK_ISN_TRACKER.insert(src_ip, seq, 0);
             debug!(
                 ctx,
                 "ACK_TRACK: pass src={:i} seq={} delta={}", src, seq, delta
