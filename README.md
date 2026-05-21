@@ -1,4 +1,4 @@
-# Efense -- Linux Sensitive Monitor and Protection Tool
+# Efense -- Linux Security Monitor and Protection Tool
 
 *Working in progress, no use at all*
 
