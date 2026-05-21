@@ -211,7 +211,7 @@ fn try_efense_net_xdp_ingress_apply(
 
             // Run TCP ACK flood protection before the regular filter.
             if let Some(action) = crate::protect::protect_tcp_ack_flood(
-                ctx, ifindex, src_ip, tcphdr,
+                ctx, ifindex, src_ip, src_port, tcphdr,
             )? {
                 return Ok(action);
             }

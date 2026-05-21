@@ -6,7 +6,9 @@ use aya_ebpf::{
     bindings::xdp_action, macros::map, maps::HashMap, programs::XdpContext,
 };
 use aya_log_ebpf::debug;
-use efense_core::{EfenseErrorCode, MAX_IFACES, MAX_TCP_ACK_ISN_ENTRIES};
+use efense_core::{
+    AckTrackKey, EfenseErrorCode, MAX_IFACES, MAX_TCP_ACK_SEQ_ENTRIES,
+};
 use network_types::tcp::TcpHdr;
 
 use crate::enforce::TCP_IFACE_ALLOW_OUTGOING;
@@ -22,13 +24,13 @@ use crate::enforce::TCP_IFACE_ALLOW_OUTGOING;
 static TCP_ACK_FLOOD_PROT_ENABLED: HashMap<u32, u32> =
     HashMap::<u32, u32>::with_max_entries(MAX_IFACES, 0);
 
-/// Source-IP → handshake sequence-number tracker.
+/// (source-IP, source-port) → handshake sequence-number tracker.
 ///
 /// Populated at runtime when a handshake-completing ACK is observed.
-/// Keyed by source IPv4 address in network byte order.
-#[map(name = "TCP_ACK_ISN_TRACKER")]
-static TCP_ACK_ISN_TRACKER: HashMap<[u8; 4], u32> =
-    HashMap::<[u8; 4], u32>::with_max_entries(MAX_TCP_ACK_ISN_ENTRIES, 0);
+/// Keyed by [`AckTrackKey`].
+#[map(name = "TCP_ACK_SEQ_TRACKER")]
+static TCP_ACK_SEQ_TRACKER: HashMap<AckTrackKey, u32> =
+    HashMap::<AckTrackKey, u32>::with_max_entries(MAX_TCP_ACK_SEQ_ENTRIES, 0);
 
 /// TCP ACK flood protection — runs before `decide_tcp`.
 ///
@@ -37,9 +39,9 @@ static TCP_ACK_ISN_TRACKER: HashMap<[u8; 4], u32> =
 ///
 /// ## Behaviour
 ///
-/// * **SYN** (new incoming connection): records `src_ip + ISN` in the tracker
+/// * **SYN** (new incoming connection): records `src_ip + SEQ` in the tracker
 ///   so that the eventual ACK completing the handshake can be validated.
-/// * **SYN-ACK** (response to an outbound SYN): records `src_ip + ISN` only
+/// * **SYN-ACK** (response to an outbound SYN): records `src_ip + SEQ` only
 ///   when [`allow_outgoing`] is set for this interface.  When `allow_outgoing`
 ///   is `false` the SYN-ACK is silently skipped — no outbound connection could
 ///   have produced it, so there is nothing to track.
@@ -53,6 +55,7 @@ pub fn protect_tcp_ack_flood(
     ctx: &XdpContext,
     ifindex: u32,
     src_ip: [u8; 4],
+    src_port: u16,
     tcphdr: *const TcpHdr,
 ) -> Result<Option<u32>, EfenseErrorCode> {
     // Check if ACK flood protection is enabled on this interface.
@@ -83,12 +86,14 @@ pub fn protect_tcp_ack_flood(
             );
             return Ok(Some(xdp_action::XDP_DROP));
         }
-        let _ = TCP_ACK_ISN_TRACKER.insert(src_ip, seq, 0);
+        let key = AckTrackKey::new(src_ip, src_port);
+        let _ = TCP_ACK_SEQ_TRACKER.insert(key, seq, 0);
         debug!(ctx, "ACK_TRACK: learned src={:i} seq={}", src, seq);
         return Ok(None);
     }
 
-    match unsafe { TCP_ACK_ISN_TRACKER.get(src_ip) } {
+    let key = AckTrackKey::new(src_ip, src_port);
+    match unsafe { TCP_ACK_SEQ_TRACKER.get(&key) } {
         Some(pre_seq) => {
             let delta = seq.wrapping_sub(*pre_seq);
             if delta > 0xffff {
@@ -102,7 +107,7 @@ pub fn protect_tcp_ack_flood(
                 );
                 return Ok(Some(xdp_action::XDP_DROP));
             }
-            let _ = TCP_ACK_ISN_TRACKER.insert(src_ip, seq, 0);
+            let _ = TCP_ACK_SEQ_TRACKER.insert(key, seq, 0);
             debug!(
                 ctx,
                 "ACK_TRACK: pass src={:i} seq={} delta={}", src, seq, delta

@@ -137,16 +137,15 @@ pub const PROTO_DFLT_UDP: u32 = 0;
 /// Index of the TCP entry in [`MAP_PROTO_DFLT`].
 pub const PROTO_DFLT_TCP: u32 = 1;
 
-/// Map name for the source-IP-to-ISN tracker used by TCP ACK flood
-/// protection.
+/// Map name for the (source-IP, source-port) → SEQ tracker used by TCP
+/// ACK flood protection.
 ///
-/// `BPF_MAP_TYPE_HASH` keyed by source IPv4 address (`[u8; 4]`, network
-/// byte order), value `u32` (sequence number from the completed handshake
-/// ACK, used as the ISN baseline).
-pub const MAP_TCP_ACK_ISN_TRACKER: &str = "TCP_ACK_ISN_TRACKER";
+/// `BPF_MAP_TYPE_HASH` keyed by [`AckTrackKey`], value `u32` (sequence
+/// number from the completed handshake ACK, used as the SEQ baseline).
+pub const MAP_TCP_ACK_SEQ_TRACKER: &str = "TCP_ACK_SEQ_TRACKER";
 
-/// Maximum number of entries in [`MAP_TCP_ACK_ISN_TRACKER`].
-pub const MAX_TCP_ACK_ISN_ENTRIES: u32 = 32768;
+/// Maximum number of entries in [`MAP_TCP_ACK_SEQ_TRACKER`].
+pub const MAX_TCP_ACK_SEQ_ENTRIES: u32 = 32768;
 
 /// Ring buffer byte size for event monitoring (`UDP4_EVENTS` and
 /// `TCP4_EVENTS`). Must be a power of 2 and page-aligned (multiple of 4096).
@@ -265,6 +264,29 @@ impl PortKey {
         Self {
             ifindex,
             port,
+            _pad: [0; 2],
+        }
+    }
+}
+
+/// Key for the TCP ACK SEQ tracker map [`MAP_TCP_ACK_SEQ_TRACKER`].
+///
+/// `src_ip` is the source IPv4 address in network byte order; `src_port`
+/// is the source TCP port in host byte order.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct AckTrackKey {
+    pub src_ip: [u8; 4],
+    pub src_port: u16,
+    pub _pad: [u8; 2],
+}
+
+impl AckTrackKey {
+    #[inline]
+    pub const fn new(src_ip: [u8; 4], src_port: u16) -> Self {
+        Self {
+            src_ip,
+            src_port,
             _pad: [0; 2],
         }
     }
