@@ -153,40 +153,49 @@ fn try_efence_net_xdp_ingress_apply(
 
     match proto {
         IpProto::Udp => {
+            let udphdr: *const UdpHdr =
+                ptr_at(ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
+            let src_port: u16 = unsafe { (*udphdr).src_port() };
+            let dst_port: u16 = unsafe { (*udphdr).dst_port() };
             // Early skip: if the protocol-level default is PASS, allow all
             // UDP traffic without any further processing.
             if let Some(&v) = PROTO_DFLT.get(0)
                 && v == ACTION_PASS
             {
+                crate::monitor::try_monitor_udp(
+                    ipv4hdr, src_ip, src_port, dst_port,
+                );
                 return Ok(xdp_action::XDP_PASS);
             }
-            let udphdr: *const UdpHdr =
-                ptr_at(ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
-            let src_port: u16 = unsafe { (*udphdr).src_port() };
-            let dst_port: u16 = unsafe { (*udphdr).dst_port() };
             // Early port allow-list check for UDP.
             let udp_key = PortKey::new(ifindex, src_port);
             if unsafe { PORT_ALLOW_LIST.get(udp_key) }.is_none() {
                 return Ok(xdp_action::XDP_DROP);
             }
-            let action = decide_udp(ifindex, src_ip, src_port);
-            crate::monitor::try_monitor_udp(
-                ipv4hdr, src_ip, src_port, dst_port,
-            );
+            let (is_default_action, action) =
+                decide_udp(ifindex, src_ip, src_port);
+            if is_default_action {
+                crate::monitor::try_monitor_udp(
+                    ipv4hdr, src_ip, src_port, dst_port,
+                );
+            }
             Ok(action)
         }
         IpProto::Tcp => {
+            let tcphdr: *const TcpHdr =
+                ptr_at(ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
+            let src_port: u16 = unsafe { u16::from_be_bytes((*tcphdr).source) };
+            let dst_port: u16 = unsafe { u16::from_be_bytes((*tcphdr).dest) };
             // Early skip: if the protocol-level default is PASS, allow all
             // TCP traffic without any further processing.
             if let Some(&v) = PROTO_DFLT.get(1)
                 && v == ACTION_PASS
             {
+                crate::monitor::try_monitor_tcp(
+                    ipv4hdr, src_ip, src_port, dst_port, tcphdr,
+                );
                 return Ok(xdp_action::XDP_PASS);
             }
-            let tcphdr: *const TcpHdr =
-                ptr_at(ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
-            let src_port: u16 = unsafe { u16::from_be_bytes((*tcphdr).source) };
-            let dst_port: u16 = unsafe { u16::from_be_bytes((*tcphdr).dest) };
 
             // Early port allow-list check: drop SYN to non-allowed ports.
             let tcp_key = PortKey::new(ifindex, dst_port);
@@ -207,10 +216,13 @@ fn try_efence_net_xdp_ingress_apply(
                 return Ok(action);
             }
 
-            let action = decide_tcp(ifindex, src_ip, dst_port, tcphdr);
-            crate::monitor::try_monitor_tcp(
-                ipv4hdr, src_ip, src_port, dst_port, tcphdr,
-            );
+            let (is_default_action, action) =
+                decide_tcp(ifindex, src_ip, dst_port, tcphdr);
+            if is_default_action {
+                crate::monitor::try_monitor_tcp(
+                    ipv4hdr, src_ip, src_port, dst_port, tcphdr,
+                );
+            }
             Ok(action)
         }
         _ => Ok(xdp_action::XDP_PASS),
@@ -218,42 +230,46 @@ fn try_efence_net_xdp_ingress_apply(
 }
 
 /// Decide the fate of a UDP packet using UDP-specific maps.
+/// Returns `(is_default_action, action)` where `is_default_action` is `true`
+/// when no specific rule matched and the packet is handled by the default.
 #[inline(always)]
-fn decide_udp(ifindex: u32, src_ip: [u8; 4], src_port: u16) -> u32 {
+fn decide_udp(ifindex: u32, src_ip: [u8; 4], src_port: u16) -> (bool, u32) {
     let inner_lpm = match unsafe { UDP_IFACE_TO_LPM.get(&ifindex) } {
         Some(t) => t,
-        None => return xdp_action::XDP_PASS,
+        None => return (false, xdp_action::XDP_PASS),
     };
 
     let lpm_key = LpmKey::new(32, src_ip);
     let matched_prefix: Ipv4Cidr = match inner_lpm.get(&lpm_key) {
         Some(p) => *p,
-        None => return xdp_action::XDP_DROP,
+        None => return (true, xdp_action::XDP_DROP),
     };
 
     let key_exact = PrefixPort::new(matched_prefix, src_port);
     if let Some(action) = unsafe { UDP_PORT_ACTION.get(key_exact) } {
-        return action_to_xdp(*action);
+        return (false, action_to_xdp(*action));
     }
     let key_any = PrefixPort::new(matched_prefix, PORT_ANY);
     if let Some(action) = unsafe { UDP_PORT_ACTION.get(key_any) } {
-        return action_to_xdp(*action);
+        return (false, action_to_xdp(*action));
     }
 
-    xdp_action::XDP_DROP
+    (true, xdp_action::XDP_DROP)
 }
 
 /// Decide the fate of a TCP packet using TCP-specific maps.
+/// Returns `(is_default_action, action)` where `is_default_action` is `true`
+/// when no specific rule matched and the packet is handled by the default.
 #[inline(always)]
 fn decide_tcp(
     ifindex: u32,
     src_ip: [u8; 4],
     dst_port: u16,
     tcphdr: *const TcpHdr,
-) -> u32 {
+) -> (bool, u32) {
     let inner_lpm = match unsafe { TCP_IFACE_TO_LPM.get(&ifindex) } {
         Some(t) => t,
-        None => return xdp_action::XDP_PASS,
+        None => return (false, xdp_action::XDP_PASS),
     };
 
     // Check whether allow_outgoing is set for this interface.
@@ -266,31 +282,31 @@ fn decide_tcp(
         // Pass everything except pure SYNs (syn=1, ack=0), which are
         // new incoming connection requests and still get filtered.
         if syn == 0 {
-            return xdp_action::XDP_PASS;
+            return (false, xdp_action::XDP_PASS);
         }
         let ack = unsafe { (*tcphdr).ack() };
         if ack != 0 {
             // SYN-ACK – response to an outbound SYN from this host.
-            return xdp_action::XDP_PASS;
+            return (false, xdp_action::XDP_PASS);
         }
     }
 
     let lpm_key = LpmKey::new(32, src_ip);
     let matched_prefix: Ipv4Cidr = match inner_lpm.get(&lpm_key) {
         Some(p) => *p,
-        None => return tcp_iface_default_action(ifindex),
+        None => return (true, tcp_iface_default_action(ifindex)),
     };
 
     let key_exact = PrefixPort::new(matched_prefix, dst_port);
     if let Some(action) = unsafe { TCP_PORT_ACTION.get(key_exact) } {
-        return action_to_xdp(*action);
+        return (false, action_to_xdp(*action));
     }
     let key_any = PrefixPort::new(matched_prefix, PORT_ANY);
     if let Some(action) = unsafe { TCP_PORT_ACTION.get(key_any) } {
-        return action_to_xdp(*action);
+        return (false, action_to_xdp(*action));
     }
 
-    tcp_iface_default_action(ifindex)
+    (true, tcp_iface_default_action(ifindex))
 }
 
 #[inline(always)]
