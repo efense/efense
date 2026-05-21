@@ -24,7 +24,7 @@ tokio = { workspace = true, features = [
     "signal",
     "sync",
 ] }
-clap = { workspace = true, features = ["help", "usage"] }
+clap = { workspace = true, features = ["error-context", "help", "usage"] }
 serde_yaml = "0.9"
 serde_json = { workspace = true }
 
