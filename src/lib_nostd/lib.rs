@@ -8,7 +8,7 @@ mod tcp;
 mod udp;
 
 pub use self::{
-    error::EfenceErrorCode,
+    error::EfenseErrorCode,
     policy::{
         ACTION_DROP, ACTION_PASS, ALLOW_OUTGOING_FLAG, CFG_BLOB_LEN,
         EVENT_MONITOR_BUF_SIZE, Ipv4Cidr, MAP_CFG, MAP_CFG_LEN,

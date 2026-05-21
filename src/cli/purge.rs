@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use aya::programs::links::PinnedLink;
-use efence::EfenceError;
+use efense::EfenseError;
 use log::warn;
 
 use crate::pin::{
@@ -22,7 +22,7 @@ impl CommandPurge {
 
     pub(crate) async fn handle(
         _matches: &clap::ArgMatches,
-    ) -> Result<(), EfenceError> {
+    ) -> Result<(), EfenseError> {
         let roots = [
             Path::new(PIN_UDP_INGRESS_DIR),
             Path::new(PIN_TCP_INGRESS_DIR),
@@ -50,20 +50,20 @@ impl CommandPurge {
 
 /// Open every pinned link and unpin it so the kernel detaches the XDP
 /// program from the corresponding interface.
-fn detach_links() -> Result<(), EfenceError> {
+fn detach_links() -> Result<(), EfenseError> {
     let dir = link_pin_dir();
     if !dir.exists() {
         return Ok(());
     }
     let entries = std::fs::read_dir(&dir).map_err(|e| {
-        EfenceError::from(format!(
+        EfenseError::from(format!(
             "failed to read link pin dir {}: {e}",
             dir.display()
         ))
     })?;
     for entry in entries {
         let entry = entry.map_err(|e| {
-            EfenceError::from(format!("failed to iterate link pin dir: {e}"))
+            EfenseError::from(format!("failed to iterate link pin dir: {e}"))
         })?;
         let path = entry.path();
         match PinnedLink::from_pin(&path) {
@@ -82,9 +82,9 @@ fn detach_links() -> Result<(), EfenceError> {
     Ok(())
 }
 
-fn remove_tree(path: &Path) -> Result<(), EfenceError> {
+fn remove_tree(path: &Path) -> Result<(), EfenseError> {
     std::fs::remove_dir_all(path).map_err(|e| {
-        EfenceError::from(format!(
+        EfenseError::from(format!(
             "failed to remove pin tree {}: {e}",
             path.display()
         ))

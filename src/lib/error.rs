@@ -26,12 +26,12 @@ impl fmt::Display for ErrorKind {
 }
 
 #[derive(Debug)]
-pub struct EfenceError {
+pub struct EfenseError {
     pub kind: ErrorKind,
     pub msg: String,
 }
 
-impl fmt::Display for EfenceError {
+impl fmt::Display for EfenseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}: {}", self.kind, self.msg)
     }
@@ -48,83 +48,83 @@ fn format_error_chain<E: Error + ?Sized>(e: &E) -> String {
     s
 }
 
-impl Error for EfenceError {}
+impl Error for EfenseError {}
 
-impl From<io::Error> for EfenceError {
+impl From<io::Error> for EfenseError {
     fn from(e: io::Error) -> Self {
-        EfenceError {
+        EfenseError {
             kind: ErrorKind::Io,
             msg: e.to_string(),
         }
     }
 }
 
-impl From<aya::EbpfError> for EfenceError {
+impl From<aya::EbpfError> for EfenseError {
     fn from(e: aya::EbpfError) -> Self {
-        EfenceError {
+        EfenseError {
             kind: ErrorKind::Ebpf,
             msg: format_error_chain(&e),
         }
     }
 }
 
-impl From<aya::maps::MapError> for EfenceError {
+impl From<aya::maps::MapError> for EfenseError {
     fn from(e: aya::maps::MapError) -> Self {
-        EfenceError {
+        EfenseError {
             kind: ErrorKind::Map,
             msg: format_error_chain(&e),
         }
     }
 }
 
-impl From<aya::programs::ProgramError> for EfenceError {
+impl From<aya::programs::ProgramError> for EfenseError {
     fn from(e: aya::programs::ProgramError) -> Self {
-        EfenceError {
+        EfenseError {
             kind: ErrorKind::Program,
             msg: format_error_chain(&e),
         }
     }
 }
 
-impl From<aya::pin::PinError> for EfenceError {
+impl From<aya::pin::PinError> for EfenseError {
     fn from(e: aya::pin::PinError) -> Self {
-        EfenceError {
+        EfenseError {
             kind: ErrorKind::Program,
             msg: format_error_chain(&e),
         }
     }
 }
 
-impl From<aya::programs::links::LinkError> for EfenceError {
+impl From<aya::programs::links::LinkError> for EfenseError {
     fn from(e: aya::programs::links::LinkError) -> Self {
-        EfenceError {
+        EfenseError {
             kind: ErrorKind::Program,
             msg: format_error_chain(&e),
         }
     }
 }
 
-impl From<std::array::TryFromSliceError> for EfenceError {
+impl From<std::array::TryFromSliceError> for EfenseError {
     fn from(e: std::array::TryFromSliceError) -> Self {
-        EfenceError {
+        EfenseError {
             kind: ErrorKind::TryFromSlice,
             msg: e.to_string(),
         }
     }
 }
 
-impl From<String> for EfenceError {
+impl From<String> for EfenseError {
     fn from(e: String) -> Self {
-        EfenceError {
+        EfenseError {
             kind: ErrorKind::Bug,
             msg: e,
         }
     }
 }
 
-impl From<&str> for EfenceError {
+impl From<&str> for EfenseError {
     fn from(e: &str) -> Self {
-        EfenceError {
+        EfenseError {
             kind: ErrorKind::Bug,
             msg: e.to_string(),
         }

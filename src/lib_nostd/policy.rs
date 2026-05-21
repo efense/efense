@@ -64,7 +64,7 @@ pub const MAP_TCP_INGRESS_IFACE_TO_LPM: &str = "TCP_IN_IF2LPM";
 /// is used as the "any destination port" bucket for a given prefix.
 pub const MAP_TCP_INGRESS_PORT_ACTION: &str = "TCP_IN_PORT_ACT";
 
-/// Map name holding the serialized [`EfenceConfig`] JSON blob.
+/// Map name holding the serialized [`EfenseConfig`] JSON blob.
 ///
 /// `BPF_MAP_TYPE_ARRAY` of [`CFG_BLOB_LEN`] bytes. Only the first
 /// [`MAP_CFG_LEN`] bytes are meaningful.
@@ -102,7 +102,7 @@ pub const MAX_PREFIXES: u32 = 4096;
 /// [`MAP_UDP_INGRESS_PORT_ACTION`].
 pub const MAX_PREFIX_PORT_ENTRIES: u32 = 16384;
 
-/// Maximum size in bytes of the serialized [`EfenceConfig`] JSON blob.
+/// Maximum size in bytes of the serialized [`EfenseConfig`] JSON blob.
 pub const CFG_BLOB_LEN: usize = 65536;
 
 /// Map name for the per-interface TCP ACK flood protection enabled flag.

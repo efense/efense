@@ -49,7 +49,7 @@ pub(crate) fn deserialize_timestamp<'de, D: serde::Deserializer<'de>>(
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
-pub enum EfenceEvent {
+pub enum EfenseEvent {
     #[serde(rename = "udp4_ingress")]
     Udp4Ingress(Udp4Event),
     #[serde(rename = "tcp4_ingress")]
@@ -61,7 +61,7 @@ mod tests {
     use std::{net::Ipv4Addr, time::Duration};
 
     use super::BOOT_TIME;
-    use crate::{EfenceEvent, Tcp4Event, Udp4Event};
+    use crate::{EfenseEvent, Tcp4Event, Udp4Event};
 
     #[test]
     fn serialize_deserialize_udp_event() {
@@ -75,13 +75,13 @@ mod tests {
                 .unwrap_or_default()
                 + Duration::from_nanos(1_000_000_000_001),
         );
-        let event = EfenceEvent::Udp4Ingress(udp);
+        let event = EfenseEvent::Udp4Ingress(udp);
 
         let json = serde_json::to_string(&event).unwrap();
-        let deserialized: EfenceEvent = serde_json::from_str(&json).unwrap();
+        let deserialized: EfenseEvent = serde_json::from_str(&json).unwrap();
 
         match deserialized {
-            EfenceEvent::Udp4Ingress(d) => {
+            EfenseEvent::Udp4Ingress(d) => {
                 assert_eq!(d.src, udp.src);
                 assert_eq!(d.dst, udp.dst);
                 assert_eq!(d.src_port, udp.src_port);
@@ -104,13 +104,13 @@ mod tests {
                 .unwrap_or_default()
                 + Duration::from_nanos(2_000_000_000_002),
         );
-        let event = EfenceEvent::Tcp4Ingress(tcp);
+        let event = EfenseEvent::Tcp4Ingress(tcp);
 
         let json = serde_json::to_string(&event).unwrap();
-        let deserialized: EfenceEvent = serde_json::from_str(&json).unwrap();
+        let deserialized: EfenseEvent = serde_json::from_str(&json).unwrap();
 
         match deserialized {
-            EfenceEvent::Tcp4Ingress(d) => {
+            EfenseEvent::Tcp4Ingress(d) => {
                 assert_eq!(d.src, tcp.src);
                 assert_eq!(d.dst, tcp.dst);
                 assert_eq!(d.src_port, tcp.src_port);

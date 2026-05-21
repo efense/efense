@@ -88,31 +88,31 @@ impl<'de> Deserialize<'de> for Ipv4Cidr {
 }
 
 /// `#[repr(transparent)]` userspace POD wrapper over
-/// [`efence_core::Ipv4Cidr`].
+/// [`efense_core::Ipv4Cidr`].
 ///
 /// The orphan rule forbids implementing [`aya::Pod`] directly on a type
-/// defined in `efence_core`, so we wrap it here. Because the wrapper is
+/// defined in `efense_core`, so we wrap it here. Because the wrapper is
 /// `repr(transparent)`, it has the exact same memory layout, size and
 /// alignment as the wrapped type, so a BPF map declared with
 /// `Ipv4CidrPod` as its key/value type sees the same wire bytes as a
-/// kernel-side map declared with `efence_core::Ipv4Cidr`.
+/// kernel-side map declared with `efense_core::Ipv4Cidr`.
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Ipv4CidrPod(pub efence_core::Ipv4Cidr);
+pub struct Ipv4CidrPod(pub efense_core::Ipv4Cidr);
 
-impl From<efence_core::Ipv4Cidr> for Ipv4CidrPod {
-    fn from(v: efence_core::Ipv4Cidr) -> Self {
+impl From<efense_core::Ipv4Cidr> for Ipv4CidrPod {
+    fn from(v: efense_core::Ipv4Cidr) -> Self {
         Self(v)
     }
 }
 
-impl From<Ipv4CidrPod> for efence_core::Ipv4Cidr {
+impl From<Ipv4CidrPod> for efense_core::Ipv4Cidr {
     fn from(v: Ipv4CidrPod) -> Self {
         v.0
     }
 }
 
-// SAFETY: `efence_core::Ipv4Cidr` is `#[repr(C)]` with only `Copy`
+// SAFETY: `efense_core::Ipv4Cidr` is `#[repr(C)]` with only `Copy`
 // integer fields plus explicit `_pad` bytes (so there is no implicit
 // padding), and is `'static`. The wrapper adds nothing thanks to
 // `repr(transparent)`.

@@ -5,7 +5,7 @@ use std::{
     time::{Duration, UNIX_EPOCH},
 };
 
-use efence_core::Tcp4EventRaw;
+use efense_core::Tcp4EventRaw;
 use serde::{Deserialize, Serialize};
 
 use crate::{

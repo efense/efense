@@ -6,7 +6,7 @@ use aya_ebpf::{
     bindings::xdp_action, macros::map, maps::HashMap, programs::XdpContext,
 };
 use aya_log_ebpf::debug;
-use efence_core::{EfenceErrorCode, MAX_IFACES, MAX_TCP_ACK_ISN_ENTRIES};
+use efense_core::{EfenseErrorCode, MAX_IFACES, MAX_TCP_ACK_ISN_ENTRIES};
 use network_types::tcp::TcpHdr;
 
 use crate::enforce::TCP_IFACE_ALLOW_OUTGOING;
@@ -54,7 +54,7 @@ pub fn protect_tcp_ack_flood(
     ifindex: u32,
     src_ip: [u8; 4],
     tcphdr: *const TcpHdr,
-) -> Result<Option<u32>, EfenceErrorCode> {
+) -> Result<Option<u32>, EfenseErrorCode> {
     // Check if ACK flood protection is enabled on this interface.
     match unsafe { TCP_ACK_FLOOD_PROT_ENABLED.get(ifindex) } {
         Some(v) if *v == 0 => return Ok(None),

@@ -39,8 +39,8 @@ use aya_ebpf::{
     maps::HashMap,
     programs::XdpContext,
 };
-use efence_core::{
-    ACTION_PASS, ALLOW_OUTGOING_FLAG, CFG_BLOB_LEN, EfenceErrorCode, Ipv4Cidr,
+use efense_core::{
+    ACTION_PASS, ALLOW_OUTGOING_FLAG, CFG_BLOB_LEN, EfenseErrorCode, Ipv4Cidr,
     MAX_IFACES, MAX_PORT_ALLOW_LIST_ENTRIES, MAX_PREFIX_PORT_ENTRIES,
     MAX_PREFIXES, PORT_ANY, PortKey, PrefixPort,
 };
@@ -114,7 +114,7 @@ static PORT_ALLOW_LIST: HashMap<PortKey, u32> =
 #[btf_map(name = "PROTO_DFLT")]
 static PROTO_DFLT: Array<u32, 2, 0> = Array::new();
 
-/// Serialized JSON blob of the userspace `EfenceConfig`. Opaque to the
+/// Serialized JSON blob of the userspace `EfenseConfig`. Opaque to the
 /// kernel program: it is only ever read by `efctl show`. Declared here
 /// so the verifier-loaded program owns the pin lifetime.
 #[btf_map(name = "CFG")]
@@ -129,16 +129,16 @@ static CFG_LEN: Array<u32, 1, 0> = Array::new();
 // ---------------------------------------------------------------------------
 
 #[xdp]
-pub fn efence_net_xdp_ingress_apply(ctx: XdpContext) -> u32 {
-    match try_efence_net_xdp_ingress_apply(&ctx) {
+pub fn efense_net_xdp_ingress_apply(ctx: XdpContext) -> u32 {
+    match try_efense_net_xdp_ingress_apply(&ctx) {
         Ok(action) => action,
         Err(_) => xdp_action::XDP_PASS,
     }
 }
 
-fn try_efence_net_xdp_ingress_apply(
+fn try_efense_net_xdp_ingress_apply(
     ctx: &XdpContext,
-) -> Result<u32, EfenceErrorCode> {
+) -> Result<u32, EfenseErrorCode> {
     let ethhdr: *const EthHdr = ptr_at(ctx, 0)?;
     if unsafe { (*ethhdr).ether_type() } != Ok(EtherType::Ipv4) {
         return Ok(xdp_action::XDP_PASS);
@@ -146,7 +146,7 @@ fn try_efence_net_xdp_ingress_apply(
 
     let ipv4hdr: *const Ipv4Hdr = ptr_at(ctx, EthHdr::LEN)?;
     let proto = unsafe { (*ipv4hdr).proto() }
-        .map_err(|_| EfenceErrorCode::InvalidProtocol)?;
+        .map_err(|_| EfenseErrorCode::InvalidProtocol)?;
     let src_ip: [u8; 4] = unsafe { (*ipv4hdr).src_addr };
 
     let ifindex = ctx.ingress_ifindex() as u32;

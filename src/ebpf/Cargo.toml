@@ -1,7 +1,7 @@
 [package]
-name = "efence_ebpf"
+name = "efense_ebpf"
 description = """
-Efence eBPF program for securty event monitoring and rule enforcement"""
+Efense eBPF program for securty event monitoring and rule enforcement"""
 version.workspace = true
 authors.workspace = true
 documentation.workspace = true
@@ -13,13 +13,13 @@ rust-version.workspace = true
 aya-ebpf = { workspace = true }
 aya-log-ebpf = { workspace = true }
 network-types = { workspace = true }
-efence_core = { path = "../lib_nostd" }
+efense_core = { path = "../lib_nostd" }
 
 [build-dependencies]
 which = { workspace = true }
 
 [[bin]]
-name = "efence_ebpf_cli"
+name = "efense_ebpf_cli"
 path = "main.rs"
 
 [lib]

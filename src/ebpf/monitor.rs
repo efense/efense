@@ -8,7 +8,7 @@ use aya_ebpf::{
     helpers::bpf_ktime_get_boot_ns,
     macros::btf_map,
 };
-use efence_core::{EVENT_MONITOR_BUF_SIZE, Tcp4EventRaw, Udp4EventRaw};
+use efense_core::{EVENT_MONITOR_BUF_SIZE, Tcp4EventRaw, Udp4EventRaw};
 use network_types::{ip::Ipv4Hdr, tcp::TcpHdr};
 
 // ---------------------------------------------------------------------------

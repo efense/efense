@@ -19,17 +19,17 @@
 //!   pinned link per attached interface.
 //!
 //! ```text
-//! /sys/fs/bpf/efence_main/
+//! /sys/fs/bpf/efense_main/
 //!     map/
 //!         CFG
 //!         CFG_LEN
-//! /sys/fs/bpf/efence_udp_ingress/
+//! /sys/fs/bpf/efense_udp_ingress/
 //!     program
 //!     map/
 //!         UDP_IN_IF2LPM
 //!         UDP_IN_PORT_ACT
 //!     link/<iface>
-//! /sys/fs/bpf/efence_tcp_ingress/
+//! /sys/fs/bpf/efense_tcp_ingress/
 //!     program
 //!     map/
 //!         TCP_IN_IFACE_DFLT
@@ -40,16 +40,16 @@
 
 use std::path::{Path, PathBuf};
 
-use efence::EfenceError;
+use efense::EfenseError;
 
 /// Pin root for state shared across efense subsystems.
-pub(crate) const PIN_MAIN_DIR: &str = "/sys/fs/bpf/efence_main";
+pub(crate) const PIN_MAIN_DIR: &str = "/sys/fs/bpf/efense_main";
 
 /// Pin root for the UDP-ingress XDP subsystem.
-pub(crate) const PIN_UDP_INGRESS_DIR: &str = "/sys/fs/bpf/efence_udp_ingress";
+pub(crate) const PIN_UDP_INGRESS_DIR: &str = "/sys/fs/bpf/efense_udp_ingress";
 
 /// Pin root for the TCP-ingress XDP subsystem.
-pub(crate) const PIN_TCP_INGRESS_DIR: &str = "/sys/fs/bpf/efence_tcp_ingress";
+pub(crate) const PIN_TCP_INGRESS_DIR: &str = "/sys/fs/bpf/efense_tcp_ingress";
 
 const PIN_PROG_NAME: &str = "program";
 const PIN_MAP_SUBDIR: &str = "map";
@@ -101,7 +101,7 @@ pub(crate) fn link_pin_path(iface: &str) -> PathBuf {
 }
 
 /// Ensure every pin directory used by `apply` exists.
-pub(crate) fn ensure_pin_dirs() -> Result<(), EfenceError> {
+pub(crate) fn ensure_pin_dirs() -> Result<(), EfenseError> {
     for dir in [
         Path::new(PIN_MAIN_DIR).to_path_buf(),
         main_map_pin_dir(),
@@ -112,7 +112,7 @@ pub(crate) fn ensure_pin_dirs() -> Result<(), EfenceError> {
         tcp_ingress_map_pin_dir(),
     ] {
         std::fs::create_dir_all(&dir).map_err(|e| {
-            EfenceError::from(format!(
+            EfenseError::from(format!(
                 "failed to create pin directory {}: {e}",
                 dir.display()
             ))

@@ -6,7 +6,7 @@ mod pin;
 mod purge;
 mod show;
 
-use efence::EfenceError;
+use efense::EfenseError;
 
 use self::{
     apply::CommandApply, monitor::CommandMonitor, purge::CommandPurge,
@@ -14,9 +14,9 @@ use self::{
 };
 
 #[tokio::main]
-async fn main() -> Result<(), EfenceError> {
+async fn main() -> Result<(), EfenseError> {
     let mut cli_cmd = clap::Command::new("efctl")
-        .about("efence CLI")
+        .about("efense CLI")
         .arg_required_else_help(true)
         .subcommand_required(true)
         .subcommand(CommandApply::new_cmd())

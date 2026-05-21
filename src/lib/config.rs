@@ -7,11 +7,11 @@ use crate::{tcp::TcpIngressPolicy, udp::UdpIngressPolicy};
 
 /// Top-level efense configuration applied via `efctl apply`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EfenceConfig {
+pub struct EfenseConfig {
     pub interfaces: Vec<Interface>,
 }
 
-impl EfenceConfig {
+impl EfenseConfig {
     /// Merge `old` (the configuration currently loaded into the kernel)
     /// into `self` (the desired new configuration) in-place.
     ///
@@ -91,26 +91,26 @@ pub enum Action {
     Drop,
 }
 
-/// Userspace POD wrapper over [`efence_core::PortKey`].
+/// Userspace POD wrapper over [`efense_core::PortKey`].
 ///
 /// See [`Ipv4CidrPod`] for the rationale.
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct PortKeyPod(pub efence_core::PortKey);
+pub struct PortKeyPod(pub efense_core::PortKey);
 
-impl From<efence_core::PortKey> for PortKeyPod {
-    fn from(v: efence_core::PortKey) -> Self {
+impl From<efense_core::PortKey> for PortKeyPod {
+    fn from(v: efense_core::PortKey) -> Self {
         Self(v)
     }
 }
 
-impl From<PortKeyPod> for efence_core::PortKey {
+impl From<PortKeyPod> for efense_core::PortKey {
     fn from(v: PortKeyPod) -> Self {
         v.0
     }
 }
 
-// SAFETY: `efence_core::PortKey` is `#[repr(C)]` with only `Copy` integer
+// SAFETY: `efense_core::PortKey` is `#[repr(C)]` with only `Copy` integer
 // fields plus explicit `_pad` bytes, and is `'static`. The wrapper adds
 // nothing thanks to `repr(transparent)`.
 unsafe impl Pod for PortKeyPod {}
@@ -134,7 +134,7 @@ interfaces:
         - 10.0.0.0/24
         src_port: 80
 ";
-        let cfg: EfenceConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: EfenseConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(cfg.interfaces.len(), 1);
         let iface = &cfg.interfaces[0];
         assert_eq!(iface.name, "enp2s0");
@@ -174,7 +174,7 @@ interfaces:
         - 192.168.122.0/24
         port: 22
 ";
-        let cfg: EfenceConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: EfenseConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(cfg.interfaces.len(), 1);
         let iface = &cfg.interfaces[0];
         assert_eq!(iface.name, "enp2s0");
@@ -190,14 +190,14 @@ interfaces:
 
     #[test]
     fn merge_appends_interfaces_only_in_old() {
-        let mut new = EfenceConfig {
+        let mut new = EfenseConfig {
             interfaces: vec![Interface {
                 name: "eth0".to_string(),
                 udp: Some(udp_policy(&[])),
                 tcp: None,
             }],
         };
-        let old = EfenceConfig {
+        let old = EfenseConfig {
             interfaces: vec![Interface {
                 name: "eth1".to_string(),
                 udp: Some(udp_policy(&[("a", 1)])),
@@ -216,14 +216,14 @@ interfaces:
 
     #[test]
     fn merge_new_overrides_per_protocol_when_set() {
-        let mut new = EfenceConfig {
+        let mut new = EfenseConfig {
             interfaces: vec![Interface {
                 name: "eth0".to_string(),
                 udp: Some(udp_policy(&[("new", 53)])),
                 tcp: None,
             }],
         };
-        let old = EfenceConfig {
+        let old = EfenseConfig {
             interfaces: vec![Interface {
                 name: "eth0".to_string(),
                 udp: Some(udp_policy(&[("old", 80)])),
@@ -239,14 +239,14 @@ interfaces:
 
     #[test]
     fn merge_fills_missing_protocol_from_old() {
-        let mut new = EfenceConfig {
+        let mut new = EfenseConfig {
             interfaces: vec![Interface {
                 name: "eth0".to_string(),
                 udp: None,
                 tcp: None,
             }],
         };
-        let old = EfenceConfig {
+        let old = EfenseConfig {
             interfaces: vec![Interface {
                 name: "eth0".to_string(),
                 udp: Some(udp_policy(&[("old", 80)])),

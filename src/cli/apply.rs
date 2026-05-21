@@ -17,12 +17,12 @@ use aya::{
         links::{FdLink, PinnedLink},
     },
 };
-use efence::{
-    Action, EfenceConfig, EfenceError, Interface, Ipv4CidrPod, PortKeyPod,
+use efense::{
+    Action, EfenseConfig, EfenseError, Interface, Ipv4CidrPod, PortKeyPod,
     PrefixPortPod, Tcp4IngressRule, TcpIngressPolicy, Udp4IngressRule,
     UdpIngressPolicy,
 };
-use efence_core::{
+use efense_core::{
     ACTION_DROP, ACTION_PASS, ALLOW_OUTGOING_FLAG, CFG_BLOB_LEN, Ipv4Cidr,
     MAP_CFG, MAP_CFG_LEN, MAP_MONITOR_ENABLED, MAP_PORT_ALLOW_LIST,
     MAP_PROTO_DFLT, MAP_TCP_ACK_FLOOD_PROTECTION_ENABLED,
@@ -40,7 +40,7 @@ use crate::pin::{
 };
 
 const ARG_CONFIG: &str = "CONFIG";
-pub(crate) const PROG_NAME: &str = "efence_net_xdp_ingress_apply";
+pub(crate) const PROG_NAME: &str = "efense_net_xdp_ingress_apply";
 
 /// `BPF_F_NO_PREALLOC` flag value (1). The kernel forces this on for
 /// LPM tries, but we set it explicitly so the inner LPM template we
@@ -64,7 +64,7 @@ impl CommandApply {
 
     pub(crate) async fn handle(
         matches: &clap::ArgMatches,
-    ) -> Result<(), EfenceError> {
+    ) -> Result<(), EfenseError> {
         let source: &String = matches
             .get_one::<String>(ARG_CONFIG)
             .expect("clap required CONFIG");
@@ -78,9 +78,9 @@ impl CommandApply {
     }
 }
 
-fn load_config_from_file(path: &Path) -> Result<EfenceConfig, EfenceError> {
+fn load_config_from_file(path: &Path) -> Result<EfenseConfig, EfenseError> {
     let text = std::fs::read_to_string(path).map_err(|e| {
-        EfenceError::from(format!(
+        EfenseError::from(format!(
             "failed to read config {}: {e}",
             path.display()
         ))
@@ -88,22 +88,22 @@ fn load_config_from_file(path: &Path) -> Result<EfenceConfig, EfenceError> {
     parse_config(&text)
 }
 
-fn load_config_from_stdin() -> Result<EfenceConfig, EfenceError> {
+fn load_config_from_stdin() -> Result<EfenseConfig, EfenseError> {
     use std::io::Read;
     let mut text = String::new();
     std::io::stdin().read_to_string(&mut text).map_err(|e| {
-        EfenceError::from(format!("failed to read config from stdin: {e}"))
+        EfenseError::from(format!("failed to read config from stdin: {e}"))
     })?;
     parse_config(&text)
 }
 
-fn parse_config(text: &str) -> Result<EfenceConfig, EfenceError> {
-    serde_yaml::from_str::<EfenceConfig>(text).map_err(|e| {
-        EfenceError::from(format!("failed to parse YAML config: {e}"))
+fn parse_config(text: &str) -> Result<EfenseConfig, EfenseError> {
+    serde_yaml::from_str::<EfenseConfig>(text).map_err(|e| {
+        EfenseError::from(format!("failed to parse YAML config: {e}"))
     })
 }
 
-fn apply(mut cfg: EfenceConfig) -> Result<(), EfenceError> {
+fn apply(mut cfg: EfenseConfig) -> Result<(), EfenseError> {
     bump_memlock();
     ensure_pin_dirs()?;
 
@@ -145,8 +145,8 @@ fn apply(mut cfg: EfenceConfig) -> Result<(), EfenceError> {
 
 fn populate_maps(
     ebpf: &mut aya::Ebpf,
-    cfg: &EfenceConfig,
-) -> Result<(), EfenceError> {
+    cfg: &EfenseConfig,
+) -> Result<(), EfenseError> {
     // Compute the flattened rule set per interface, indexed by ifindex.
     let udp_by_iface = collect_udp_per_iface(cfg)?;
     let tcp_by_iface = collect_tcp_per_iface(cfg)?;
@@ -182,8 +182,8 @@ struct IfacePolicy {
 }
 
 fn collect_udp_per_iface(
-    cfg: &EfenceConfig,
-) -> Result<StdHashMap<u32, IfacePolicy>, EfenceError> {
+    cfg: &EfenseConfig,
+) -> Result<StdHashMap<u32, IfacePolicy>, EfenseError> {
     let mut by_iface: StdHashMap<u32, IfacePolicy> = StdHashMap::new();
     for iface in &cfg.interfaces {
         let UdpIngressPolicy { allow_list } = match iface.udp.as_ref() {
@@ -207,8 +207,8 @@ fn collect_udp_per_iface(
 }
 
 fn collect_tcp_per_iface(
-    cfg: &EfenceConfig,
-) -> Result<StdHashMap<u32, IfacePolicy>, EfenceError> {
+    cfg: &EfenseConfig,
+) -> Result<StdHashMap<u32, IfacePolicy>, EfenseError> {
     let mut by_iface: StdHashMap<u32, IfacePolicy> = StdHashMap::new();
     for iface in &cfg.interfaces {
         let TcpIngressPolicy {
@@ -239,7 +239,7 @@ fn collect_tcp_per_iface(
 fn expand_udp_rule(
     rule: &Udp4IngressRule,
     out: &mut IfacePolicy,
-) -> Result<(), EfenceError> {
+) -> Result<(), EfenseError> {
     let action = match out.default_action {
         Action::Drop => Action::Pass,
         Action::Pass => Action::Drop,
@@ -253,8 +253,8 @@ fn expand_udp_rule(
         out.port_rules.push((prefix, port, action));
     } else {
         for range_str in &rule.src_ip_ranges {
-            let cidr = efence::Ipv4Cidr::parse(range_str).map_err(|e| {
-                EfenceError::from(format!(
+            let cidr = efense::Ipv4Cidr::parse(range_str).map_err(|e| {
+                EfenseError::from(format!(
                     "invalid src_ip_range {range_str:?} in rule '{}': {e}",
                     rule.name
                 ))
@@ -270,7 +270,7 @@ fn expand_udp_rule(
 fn expand_tcp_rule(
     rule: &Tcp4IngressRule,
     out: &mut IfacePolicy,
-) -> Result<(), EfenceError> {
+) -> Result<(), EfenseError> {
     let action = match out.default_action {
         Action::Drop => Action::Pass,
         Action::Pass => Action::Drop,
@@ -284,8 +284,8 @@ fn expand_tcp_rule(
         out.port_rules.push((prefix, port, action));
     } else {
         for range_str in &rule.src_ip_ranges {
-            let cidr = efence::Ipv4Cidr::parse(range_str).map_err(|e| {
-                EfenceError::from(format!(
+            let cidr = efense::Ipv4Cidr::parse(range_str).map_err(|e| {
+                EfenseError::from(format!(
                     "invalid src_ip_range {range_str:?} in rule '{}': {e}",
                     rule.name
                 ))
@@ -298,14 +298,14 @@ fn expand_tcp_rule(
     Ok(())
 }
 
-fn lookup_ifindex(name: &str) -> Result<u32, EfenceError> {
+fn lookup_ifindex(name: &str) -> Result<u32, EfenseError> {
     let cname = CString::new(name).map_err(|e| {
-        EfenceError::from(format!("interface name {name:?}: {e}"))
+        EfenseError::from(format!("interface name {name:?}: {e}"))
     })?;
     let idx = unsafe { libc::if_nametoindex(cname.as_ptr()) };
     if idx == 0 {
         let err = std::io::Error::last_os_error();
-        return Err(EfenceError::from(format!(
+        return Err(EfenseError::from(format!(
             "if_nametoindex({name:?}) failed: {err}"
         )));
     }
@@ -315,11 +315,11 @@ fn lookup_ifindex(name: &str) -> Result<u32, EfenceError> {
 fn populate_tcp_iface_default_action(
     ebpf: &mut aya::Ebpf,
     by_iface: &StdHashMap<u32, IfacePolicy>,
-) -> Result<(), EfenceError> {
+) -> Result<(), EfenseError> {
     let map = ebpf
         .map_mut(MAP_TCP_INGRESS_IFACE_DEFAULT_ACTION)
         .ok_or_else(|| {
-            EfenceError::from(format!(
+            EfenseError::from(format!(
                 "{MAP_TCP_INGRESS_IFACE_DEFAULT_ACTION} map not found"
             ))
         })?;
@@ -338,9 +338,9 @@ fn populate_tcp_iface_default_action(
 fn populate_udp_iface_to_lpm(
     ebpf: &mut aya::Ebpf,
     by_iface: &StdHashMap<u32, IfacePolicy>,
-) -> Result<(), EfenceError> {
+) -> Result<(), EfenseError> {
     let map = ebpf.map_mut(MAP_UDP_INGRESS_IFACE_TO_LPM).ok_or_else(|| {
-        EfenceError::from(format!(
+        EfenseError::from(format!(
             "{MAP_UDP_INGRESS_IFACE_TO_LPM} map not found"
         ))
     })?;
@@ -367,9 +367,9 @@ fn populate_udp_iface_to_lpm(
 fn populate_tcp_iface_to_lpm(
     ebpf: &mut aya::Ebpf,
     by_iface: &StdHashMap<u32, IfacePolicy>,
-) -> Result<(), EfenceError> {
+) -> Result<(), EfenseError> {
     let map = ebpf.map_mut(MAP_TCP_INGRESS_IFACE_TO_LPM).ok_or_else(|| {
-        EfenceError::from(format!(
+        EfenseError::from(format!(
             "{MAP_TCP_INGRESS_IFACE_TO_LPM} map not found"
         ))
     })?;
@@ -396,9 +396,9 @@ fn populate_tcp_iface_to_lpm(
 fn populate_udp_port_action(
     ebpf: &mut aya::Ebpf,
     by_iface: &StdHashMap<u32, IfacePolicy>,
-) -> Result<(), EfenceError> {
+) -> Result<(), EfenseError> {
     let map = ebpf.map_mut(MAP_UDP_INGRESS_PORT_ACTION).ok_or_else(|| {
-        EfenceError::from(format!(
+        EfenseError::from(format!(
             "{MAP_UDP_INGRESS_PORT_ACTION} map not found"
         ))
     })?;
@@ -417,9 +417,9 @@ fn populate_udp_port_action(
 fn populate_tcp_port_action(
     ebpf: &mut aya::Ebpf,
     by_iface: &StdHashMap<u32, IfacePolicy>,
-) -> Result<(), EfenceError> {
+) -> Result<(), EfenseError> {
     let map = ebpf.map_mut(MAP_TCP_INGRESS_PORT_ACTION).ok_or_else(|| {
-        EfenceError::from(format!(
+        EfenseError::from(format!(
             "{MAP_TCP_INGRESS_PORT_ACTION} map not found"
         ))
     })?;
@@ -437,12 +437,12 @@ fn populate_tcp_port_action(
 
 fn populate_tcp_ack_flood_protection(
     ebpf: &mut aya::Ebpf,
-    cfg: &EfenceConfig,
-) -> Result<(), EfenceError> {
+    cfg: &EfenseConfig,
+) -> Result<(), EfenseError> {
     let map = ebpf
         .map_mut(MAP_TCP_ACK_FLOOD_PROTECTION_ENABLED)
         .ok_or_else(|| {
-            EfenceError::from(format!(
+            EfenseError::from(format!(
                 "{MAP_TCP_ACK_FLOOD_PROTECTION_ENABLED} map not found"
             ))
         })?;
@@ -463,8 +463,8 @@ fn populate_tcp_ack_flood_protection(
 
 fn populate_proto_dflt(
     ebpf: &mut aya::Ebpf,
-    cfg: &EfenceConfig,
-) -> Result<(), EfenceError> {
+    cfg: &EfenseConfig,
+) -> Result<(), EfenseError> {
     let mut arr: Array<&mut MapData, u32> =
         map_array_mut(ebpf, MAP_PROTO_DFLT)?;
 
@@ -495,10 +495,10 @@ fn populate_proto_dflt(
 
 fn populate_port_allow_list(
     ebpf: &mut aya::Ebpf,
-    cfg: &EfenceConfig,
-) -> Result<(), EfenceError> {
+    cfg: &EfenseConfig,
+) -> Result<(), EfenseError> {
     let map = ebpf.map_mut(MAP_PORT_ALLOW_LIST).ok_or_else(|| {
-        EfenceError::from(format!("{MAP_PORT_ALLOW_LIST} map not found"))
+        EfenseError::from(format!("{MAP_PORT_ALLOW_LIST} map not found"))
     })?;
     let mut hm: AyaHashMap<&mut MapData, PortKeyPod, u32> =
         AyaHashMap::try_from(map)?;
@@ -529,13 +529,13 @@ fn populate_port_allow_list(
 
 fn write_cfg_blob(
     ebpf: &mut aya::Ebpf,
-    cfg: &EfenceConfig,
-) -> Result<(), EfenceError> {
+    cfg: &EfenseConfig,
+) -> Result<(), EfenseError> {
     let json = serde_json::to_vec(cfg).map_err(|e| {
-        EfenceError::from(format!("failed to serialize config as JSON: {e}"))
+        EfenseError::from(format!("failed to serialize config as JSON: {e}"))
     })?;
     if json.len() > CFG_BLOB_LEN {
-        return Err(EfenceError::from(format!(
+        return Err(EfenseError::from(format!(
             "serialized config is {} bytes, exceeds max {}",
             json.len(),
             CFG_BLOB_LEN
@@ -575,10 +575,10 @@ pub(crate) fn bump_memlock() {
     }
 }
 
-pub(crate) fn load_ebpf_program() -> Result<aya::Ebpf, EfenceError> {
+pub(crate) fn load_ebpf_program() -> Result<aya::Ebpf, EfenseError> {
     Ok(aya::Ebpf::load(aya::include_bytes_aligned!(concat!(
         env!("OUT_DIR"),
-        "/efence_ebpf_cli"
+        "/efense_ebpf_cli"
     )))?)
 }
 
@@ -592,10 +592,10 @@ fn action_value(action: Action) -> u32 {
 fn map_array_mut<'a, V: aya::Pod>(
     ebpf: &'a mut aya::Ebpf,
     name: &str,
-) -> Result<Array<&'a mut MapData, V>, EfenceError> {
+) -> Result<Array<&'a mut MapData, V>, EfenseError> {
     let map = ebpf
         .map_mut(name)
-        .ok_or_else(|| EfenceError::from(format!("{name} map not found")))?;
+        .ok_or_else(|| EfenseError::from(format!("{name} map not found")))?;
     Ok(Array::try_from(map)?)
 }
 
@@ -603,7 +603,7 @@ fn map_array_mut<'a, V: aya::Pod>(
 // Pinning & program attach
 // ---------------------------------------------------------------------------
 
-fn pin_maps(ebpf: &mut aya::Ebpf) -> Result<(), EfenceError> {
+fn pin_maps(ebpf: &mut aya::Ebpf) -> Result<(), EfenseError> {
     // Maps under the UDP-ingress pin root.
     let udp_ingress_maps =
         [MAP_UDP_INGRESS_IFACE_TO_LPM, MAP_UDP_INGRESS_PORT_ACTION];
@@ -642,22 +642,22 @@ pub(crate) fn pin_one_map(
     ebpf: &mut aya::Ebpf,
     name: &str,
     path: std::path::PathBuf,
-) -> Result<(), EfenceError> {
+) -> Result<(), EfenseError> {
     // Remove a stale pin (e.g. from a previous run) so that the
     // BPF_OBJ_PIN syscall does not fail with EEXIST.
     let _ = std::fs::remove_file(&path);
     let map = ebpf
         .map(name)
-        .ok_or_else(|| EfenceError::from(format!("{name} map not found")))?;
+        .ok_or_else(|| EfenseError::from(format!("{name} map not found")))?;
     map.pin(&path)?;
     Ok(())
 }
 
-fn load_and_pin_program(ebpf: &mut aya::Ebpf) -> Result<(), EfenceError> {
+fn load_and_pin_program(ebpf: &mut aya::Ebpf) -> Result<(), EfenseError> {
     let program: &mut Xdp = ebpf
         .program_mut(PROG_NAME)
         .ok_or_else(|| {
-            EfenceError::from(format!("{PROG_NAME} program not found"))
+            EfenseError::from(format!("{PROG_NAME} program not found"))
         })?
         .try_into()?;
     program.load()?;
@@ -671,12 +671,12 @@ fn load_and_pin_program(ebpf: &mut aya::Ebpf) -> Result<(), EfenceError> {
 
 fn attach_and_pin_links(
     ebpf: &mut aya::Ebpf,
-    cfg: &EfenceConfig,
-) -> Result<(), EfenceError> {
+    cfg: &EfenseConfig,
+) -> Result<(), EfenseError> {
     let program: &mut Xdp = ebpf
         .program_mut(PROG_NAME)
         .ok_or_else(|| {
-            EfenceError::from(format!("{PROG_NAME} program not found"))
+            EfenseError::from(format!("{PROG_NAME} program not found"))
         })?
         .try_into()?;
 
@@ -686,7 +686,7 @@ fn attach_and_pin_links(
     Ok(())
 }
 
-fn interfaces_with_policy(cfg: &EfenceConfig) -> Vec<&Interface> {
+fn interfaces_with_policy(cfg: &EfenseConfig) -> Vec<&Interface> {
     cfg.interfaces
         .iter()
         .filter(|i| {
@@ -700,7 +700,7 @@ fn interfaces_with_policy(cfg: &EfenceConfig) -> Vec<&Interface> {
 fn attach_and_pin_link(
     program: &mut Xdp,
     iface: &Interface,
-) -> Result<(), EfenceError> {
+) -> Result<(), EfenseError> {
     let pin_path = link_pin_path(&iface.name);
 
     // Detach any previous pinned link for this interface first so a

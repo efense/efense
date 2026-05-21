@@ -12,7 +12,7 @@ default-members = ["src/cli", "src/lib_nostd", "src/lib"]
 version = "0.1.0"
 authors = ["Gris Ge <cnfourt@gmail.com>"]
 description = "Linux tool for security monitor and protection"
-documentation = "https://github.com/cathay4t/efence"
+documentation = "https://github.com/cathay4t/efense"
 edition = "2024"
 license = "Apache 2.0"
 rust-version = "1.88"
@@ -36,7 +36,7 @@ network-types = { version = "0.2.0", default-features = false }
 serde = { version = "1", default-features = false }
 serde_json = { version = "1", default-features = false, features = ["std"] }
 
-[profile.release.package.efence_ebpf]
+[profile.release.package.efense_ebpf]
 debug = 2
 codegen-units = 1
 strip = false

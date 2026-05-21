@@ -1,5 +1,5 @@
 [package]
-name = "efence_core"
+name = "efense_core"
 version.workspace = true
 authors.workspace = true
 description = "Crate of efense holding shared tools, (no_std)"

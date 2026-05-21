@@ -12,8 +12,8 @@ rust-version.workspace = true
 aya = { workspace = true }
 aya-log = { workspace = true }
 env_logger = { workspace = true }
-efence_core = { path = "../lib_nostd" }
-efence = { path = "../lib" }
+efense_core = { path = "../lib_nostd" }
+efense = { path = "../lib" }
 libc = { workspace = true }
 log = { workspace = true }
 tokio = { workspace = true, features = [
@@ -34,7 +34,7 @@ cargo_metadata = { workspace = true }
 # TODO(https://github.com/rust-lang/cargo/issues/12375): this should be an
 # artifact dependency, but it's not possible to tell cargo to use
 # `-Z build-std` to build it. Check aya document for more details
-efence_ebpf = { path = "../ebpf" }
+efense_ebpf = { path = "../ebpf" }
 
 [[bin]]
 name = "efctl"

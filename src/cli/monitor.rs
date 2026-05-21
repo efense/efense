@@ -13,8 +13,8 @@ use aya::{
     },
 };
 use aya_log::EbpfLogger;
-use efence::{EfenceError, EfenceEvent, ErrorKind, Tcp4Event, Udp4Event};
-use efence_core::{
+use efense::{EfenseError, EfenseEvent, ErrorKind, Tcp4Event, Udp4Event};
+use efense_core::{
     MAP_MONITOR_ENABLED, MAP_TCP4_EVENTS, MAP_UDP4_EVENTS, Tcp4EventRaw,
     Udp4EventRaw,
 };
@@ -53,7 +53,7 @@ impl CommandMonitor {
 
     pub(crate) async fn handle(
         matches: &clap::ArgMatches,
-    ) -> Result<(), EfenceError> {
+    ) -> Result<(), EfenseError> {
         let iface = matches
             .get_one::<String>(ARG_IFACE)
             .expect("clap required IFACE");
@@ -90,7 +90,7 @@ impl CommandMonitor {
 // Standalone setup (when `efctl apply` has not been run)
 // ---------------------------------------------------------------------------
 
-fn setup_bpf_state(iface: &str) -> Result<(), EfenceError> {
+fn setup_bpf_state(iface: &str) -> Result<(), EfenseError> {
     apply::bump_memlock();
     ensure_pin_dirs()?;
     let mut ebpf = apply::load_ebpf_program()?;
@@ -124,7 +124,7 @@ fn setup_bpf_state(iface: &str) -> Result<(), EfenceError> {
     let program: &mut Xdp = ebpf
         .program_mut(apply::PROG_NAME)
         .ok_or_else(|| {
-            EfenceError::from(format!("{} program not found", apply::PROG_NAME))
+            EfenseError::from(format!("{} program not found", apply::PROG_NAME))
         })?
         .try_into()?;
     program.load()?;
@@ -160,8 +160,8 @@ fn setup_bpf_state(iface: &str) -> Result<(), EfenceError> {
 
 fn open_pinned_ring_buf(
     path: PathBuf,
-) -> Result<RingBuf<MapData>, EfenceError> {
-    let map_data = MapData::from_pin(&path).map_err(|e| EfenceError {
+) -> Result<RingBuf<MapData>, EfenseError> {
+    let map_data = MapData::from_pin(&path).map_err(|e| EfenseError {
         kind: ErrorKind::Map,
         msg: format!("failed to open {path:?}: {e}"),
     })?;
@@ -169,12 +169,12 @@ fn open_pinned_ring_buf(
     Ok(RingBuf::try_from(map)?)
 }
 
-fn set_monitor_enabled(enabled: bool) -> Result<(), EfenceError> {
+fn set_monitor_enabled(enabled: bool) -> Result<(), EfenseError> {
     let path = main_map_pin_path(MAP_MONITOR_ENABLED);
     if !enabled && !path.exists() {
         return Ok(());
     }
-    let map_data = MapData::from_pin(&path).map_err(|e| EfenceError {
+    let map_data = MapData::from_pin(&path).map_err(|e| EfenseError {
         kind: ErrorKind::Map,
         msg: format!("failed to open MONITOR_ENABLED map at {path:?}: {e}"),
     })?;
@@ -191,7 +191,7 @@ fn set_monitor_enabled(enabled: bool) -> Result<(), EfenceError> {
 
 fn spawn_udp4_task(
     ring_buf: RingBuf<impl Borrow<MapData> + Send + 'static>,
-    tx: tokio::sync::mpsc::UnboundedSender<EfenceEvent>,
+    tx: tokio::sync::mpsc::UnboundedSender<EfenseEvent>,
 ) {
     let mut events =
         tokio::io::unix::AsyncFd::with_interest(ring_buf, Interest::READABLE)
@@ -204,7 +204,7 @@ fn spawn_udp4_task(
                 match Udp4EventRaw::parse(&item) {
                     Ok(raw) => {
                         let event = Udp4Event::from(raw);
-                        let _ = tx.send(EfenceEvent::Udp4Ingress(event));
+                        let _ = tx.send(EfenseEvent::Udp4Ingress(event));
                     }
                     Err(e) => warn!("failed to parse UDP4 event: {e}"),
                 }
@@ -216,7 +216,7 @@ fn spawn_udp4_task(
 
 fn spawn_tcp4_task(
     ring_buf: RingBuf<impl Borrow<MapData> + Send + 'static>,
-    tx: tokio::sync::mpsc::UnboundedSender<EfenceEvent>,
+    tx: tokio::sync::mpsc::UnboundedSender<EfenseEvent>,
 ) {
     let mut events =
         tokio::io::unix::AsyncFd::with_interest(ring_buf, Interest::READABLE)
@@ -229,7 +229,7 @@ fn spawn_tcp4_task(
                 match Tcp4EventRaw::parse(&item) {
                     Ok(raw) => {
                         let event = Tcp4Event::from(raw);
-                        let _ = tx.send(EfenceEvent::Tcp4Ingress(event));
+                        let _ = tx.send(EfenseEvent::Tcp4Ingress(event));
                     }
                     Err(e) => warn!("failed to parse TCP4 event: {e}"),
                 }
@@ -240,7 +240,7 @@ fn spawn_tcp4_task(
 }
 
 fn spawn_event_printer(
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<EfenceEvent>,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<EfenseEvent>,
 ) {
     tokio::task::spawn(async move {
         while let Some(ev) = rx.recv().await {

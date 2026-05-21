@@ -5,7 +5,7 @@ use std::{
     time::{Duration, UNIX_EPOCH},
 };
 
-use efence_core::Udp4EventRaw;
+use efense_core::Udp4EventRaw;
 use serde::{Deserialize, Serialize};
 
 use crate::event::{BOOT_TIME, deserialize_timestamp, serialize_timestamp};
@@ -78,29 +78,29 @@ impl From<Udp4EventRaw> for Udp4Event {
 }
 
 /// `#[repr(transparent)]` userspace POD wrapper over
-/// [`efence_core::PrefixPort`].
+/// [`efense_core::PrefixPort`].
 ///
 /// See [`crate::Ipv4CidrPod`] for the rationale: the orphan rule forbids
-/// implementing [`aya::Pod`] directly on a type defined in `efence_core`,
+/// implementing [`aya::Pod`] directly on a type defined in `efense_core`,
 /// so we wrap it. `repr(transparent)` keeps the wire layout identical
 /// to the wrapped type.
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct PrefixPortPod(pub efence_core::PrefixPort);
+pub struct PrefixPortPod(pub efense_core::PrefixPort);
 
-impl From<efence_core::PrefixPort> for PrefixPortPod {
-    fn from(v: efence_core::PrefixPort) -> Self {
+impl From<efense_core::PrefixPort> for PrefixPortPod {
+    fn from(v: efense_core::PrefixPort) -> Self {
         Self(v)
     }
 }
 
-impl From<PrefixPortPod> for efence_core::PrefixPort {
+impl From<PrefixPortPod> for efense_core::PrefixPort {
     fn from(v: PrefixPortPod) -> Self {
         v.0
     }
 }
 
-// SAFETY: `efence_core::PrefixPort` is `#[repr(C)]` with only `Copy`
+// SAFETY: `efense_core::PrefixPort` is `#[repr(C)]` with only `Copy`
 // integer / nested-POD fields plus explicit `_pad` bytes (so there is
 // no implicit padding), and is `'static`. The wrapper adds nothing
 // thanks to `repr(transparent)`.

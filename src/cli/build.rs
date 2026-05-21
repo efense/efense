@@ -10,9 +10,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let ebpf_package = packages
         .into_iter()
         .find(|cargo_metadata::Package { name, .. }| {
-            name.as_str() == "efence_ebpf"
+            name.as_str() == "efense_ebpf"
         })
-        .ok_or_else(|| io::Error::other("efence_ebpf package not found"))?;
+        .ok_or_else(|| io::Error::other("efense_ebpf package not found"))?;
     let cargo_metadata::Package {
         name,
         manifest_path,

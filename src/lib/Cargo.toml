@@ -1,5 +1,5 @@
 [package]
-name = "efence"
+name = "efense"
 version.workspace = true
 authors.workspace = true
 description = "Crate of efense holding shared tools, (with_std)"
@@ -10,7 +10,7 @@ rust-version.workspace = true
 
 [dependencies]
 aya = { workspace = true }
-efence_core = { path = "../lib_nostd" }
+efense_core = { path = "../lib_nostd" }
 serde = { workspace = true, features = ["derive", "std"] }
 time = { workspace = true }
 

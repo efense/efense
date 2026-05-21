@@ -4,7 +4,7 @@
 #![no_main]
 
 use aya_ebpf::programs::XdpContext;
-use efence_core::EfenceErrorCode;
+use efense_core::EfenseErrorCode;
 
 mod enforce;
 mod monitor;
@@ -14,13 +14,13 @@ mod protect;
 pub(crate) fn ptr_at<T>(
     ctx: &XdpContext,
     offset: usize,
-) -> Result<*const T, EfenceErrorCode> {
+) -> Result<*const T, EfenseErrorCode> {
     let start = ctx.data();
     let end = ctx.data_end();
     let len = core::mem::size_of::<T>();
 
     if start + offset + len > end {
-        return Err(EfenceErrorCode::PacketTooSmall);
+        return Err(EfenseErrorCode::PacketTooSmall);
     }
 
     Ok((start + offset) as *const T)

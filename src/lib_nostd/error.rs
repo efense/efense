@@ -2,19 +2,19 @@
 
 #[repr(u8)]
 #[derive(Debug, Clone)]
-pub enum EfenceErrorCode {
+pub enum EfenseErrorCode {
     PacketTooSmall,
     InvalidProtocol,
 }
 
-impl core::fmt::Display for EfenceErrorCode {
+impl core::fmt::Display for EfenseErrorCode {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
             "{}",
             match self {
-                EfenceErrorCode::PacketTooSmall => "packet too small",
-                EfenceErrorCode::InvalidProtocol => "invalid protocol",
+                EfenseErrorCode::PacketTooSmall => "packet too small",
+                EfenseErrorCode::InvalidProtocol => "invalid protocol",
             }
         )
     }
