@@ -6,3 +6,7 @@
    we don't track events been expcitly allowed/dropped.
  * TCP SYNC flood protection -- tried, it seems aya compiled code cannot pass
    kernel validation. Need deep investigation.
+ * UDP flood protection:
+    * For well known protocol (e.g. DNS), eBPF drop invalid packet
+    * For user's specific protocol, allow user to define check rule like as
+      array of `<offset>: <expected_value>`
